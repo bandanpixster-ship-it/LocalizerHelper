@@ -2,6 +2,21 @@
 
 > Reference document for implementation. Approved scope as of June 2026.
 
+## Implementation progress
+
+> **Last updated:** 2026-06-17 — Phases 0–4 implemented; Phase 5 partially done.
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| 0 Shell & open folder | Done | Security-scoped access on open; bookmark helpers in `ProjectStore` (persist/reopen deferred to Phase 5) |
+| 1 Swift extraction | Done | Lightweight tokenizer (no SwiftSyntax) |
+| 2 Localization parsing | Done | `LocalizationKey` lives in `LocalizationEntry.swift` (not a separate file) |
+| 3 Audit & detail UI | Done | Search + filter wired in toolbar area |
+| 4 Ignore list & store | Done | Context menu on localization rows |
+| 5 Polish | Partial | Background scan + cancel on re-open done; recent projects not started |
+
+**Build note:** Project uses `PBXFileSystemSynchronizedRootGroup` — new files under `LocalizerHelper/` are picked up automatically by Xcode.
+
 ## 1. Overview
 
 **LocalizerHelper** is a macOS-only SwiftUI app that helps developers audit localization in Xcode projects. The user opens a project folder, browses its file tree, inspects string literals in Swift source, and reviews localization coverage across `.strings` and `.xcstrings` files with warnings and errors.
@@ -352,42 +367,42 @@ LocalizerHelper/
 
 ### Phase 0 — Shell & open folder
 
-- [ ] `NSOpenPanel` + security-scoped bookmark (if sandboxed)
-- [ ] `ProjectScanner` with exclusion rules
-- [ ] `FileNode` tree in sidebar
-- [ ] Selection state wired to empty detail placeholder
+- [x] `NSOpenPanel` + security-scoped bookmark (if sandboxed)
+- [x] `ProjectScanner` with exclusion rules
+- [x] `FileNode` tree in sidebar
+- [x] Selection state wired to empty detail placeholder
 
 ### Phase 1 — Swift string extraction
 
-- [ ] `SwiftStringExtractor` with interpolation-aware patterns
-- [ ] `SwiftStringsDetailView` for `.swift` selection
-- [ ] Line numbers and raw snippet display
+- [x] `SwiftStringExtractor` with interpolation-aware patterns
+- [x] `SwiftStringsDetailView` for `.swift` selection
+- [x] Line numbers and raw snippet display
 
 ### Phase 2 — Localization parsing
 
-- [ ] `StringsParser` + `XCStringsParser`
-- [ ] `LocalizationCatalog` aggregation
-- [ ] English = `en` + `Base`
-- [ ] Within-file deduplication
+- [x] `StringsParser` + `XCStringsParser`
+- [x] `LocalizationCatalog` aggregation
+- [x] English = `en` + `Base`
+- [x] Within-file deduplication
 
 ### Phase 3 — Audit & detail UI
 
-- [ ] `LocalizationAuditor` (all rule IDs)
-- [ ] Folder/root detail with per-file sections
-- [ ] Issue summary chips and row badges
-- [ ] Search and filter (all / errors / warnings / ignored)
+- [x] `LocalizationAuditor` (all rule IDs)
+- [x] Folder/root detail with per-file sections
+- [x] Issue summary chips and row badges
+- [x] Search and filter (all / errors / warnings / ignored)
 
 ### Phase 4 — Ignore list & project store
 
-- [ ] `ProjectStore` with project ID derivation
-- [ ] Ignore key UI + persistence
-- [ ] Ignored keys excluded from `untranslated_copy` errors
+- [x] `ProjectStore` with project ID derivation
+- [x] Ignore key UI + persistence
+- [x] Ignored keys excluded from `untranslated_copy` errors
 
 ### Phase 5 — Polish
 
 - [ ] Recent projects (optional)
-- [ ] Performance: background scan, cancel on re-open
-- [ ] Empty states, error toasts for unreadable files
+- [x] Performance: background scan, cancel on re-open
+- [x] Empty states, error toasts for unreadable files _(scan errors via alert; unreadable-file list tracked in VM, no dedicated toast yet)_
 
 ### Future (explicitly deferred)
 
@@ -434,9 +449,9 @@ LocalizerHelper/
 
 These can be decided during build without plan changes:
 
-1. **Swift extractor:** SwiftSyntax package vs lightweight tokenizer (trade-off: accuracy vs dependency).
-2. **Last-wins vs first-wins** for duplicate keys in one file (default: last wins).
-3. **Recent projects** list in Phase 5 vs skipping for minimal v1.
+1. **Swift extractor:** ~~SwiftSyntax package vs lightweight tokenizer~~ → **lightweight tokenizer** (implemented).
+2. **Last-wins vs first-wins** for duplicate keys in one file → **last wins** (implemented in `StringsParser` / `XCStringsParser`).
+3. **Recent projects** list in Phase 5 vs skipping for minimal v1 → **deferred** (bookmark helpers ready in `ProjectStore`).
 
 ---
 
