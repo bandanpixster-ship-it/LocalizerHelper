@@ -1,7 +1,7 @@
 import Foundation
 
 struct StringsParser: Sendable {
-    func parse(fileURL: URL) throws -> [LocalizationEntry] {
+    func parse(_ fileURL: URL) throws -> [LocalizationEntry] {
         let content = try String(contentsOf: fileURL, encoding: .utf8)
         let tableName = tableName(from: fileURL)
         let language = languageCode(from: fileURL)

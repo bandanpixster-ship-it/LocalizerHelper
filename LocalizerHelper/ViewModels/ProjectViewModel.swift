@@ -219,7 +219,7 @@ final class ProjectViewModel {
             let newEntries: [LocalizationEntry]
             switch extensionName {
             case "strings":
-                newEntries = try parsers.strings.parse(fileURL: fileURL)
+                newEntries = try parsers.strings.parse(fileURL)
             case "xcstrings":
                 newEntries = try parsers.xcstrings.parse(fileURL: fileURL)
             default:
@@ -288,6 +288,28 @@ final class ProjectViewModel {
             }
         } else {
             swiftLiterals = []
+        }
+    }
+
+    func translate(text: String, to language: String) async throws -> String {
+        try await TranslationService.shared.translate(text: text, to: language)
+    }
+
+    var localizationFiles: [URL] {
+        var urls = Set<URL>()
+        for entry in catalog.entries {
+            urls.insert(entry.sourceFile)
+        }
+        return Array(urls).sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    func addLocalization(key: String, targetFileURL: URL, translations: [String: String]) {
+        do {
+            try fileUpdater.addTranslation(to: targetFileURL, key: key, translations: translations)
+            refreshCatalogEntries(for: targetFileURL)
+            refreshAudit()
+        } catch {
+            scanError = error.localizedDescription
         }
     }
 

@@ -63,6 +63,93 @@ struct LocalizationFileUpdater {
         logger.info("Successfully updated translation for key=\(key, privacy: .public) in language=\(language, privacy: .public)")
     }
 
+    func addTranslation(to fileURL: URL, key: String, translations: [String: String]) throws {
+        logger.debug("Attempting to add translation: key=\(key, privacy: .public) to file=\(fileURL.path, privacy: .public)")
+
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            logger.error("File not found at: \(fileURL.path, privacy: .public)")
+            throw UpdateError.fileNotFound(path: fileURL.path)
+        }
+
+        guard fileManager.isWritableFile(atPath: fileURL.path) else {
+            logger.error("No write permission for: \(fileURL.path, privacy: .public)")
+            throw UpdateError.fileAccessDenied(path: fileURL.path)
+        }
+
+        let extensionName = fileURL.pathExtension.lowercased()
+        switch extensionName {
+        case "strings":
+            let language = fileURL.deletingLastPathComponent().pathExtension == "lproj"
+                ? fileURL.deletingLastPathComponent().deletingPathExtension().lastPathComponent
+                : "en"
+            let value = translations[language] ?? translations["en"] ?? key
+            try addToStringsFile(fileURL: fileURL, key: key, value: value)
+        case "xcstrings":
+            try addToXCStringsFile(fileURL: fileURL, key: key, translations: translations)
+        default:
+            logger.error("Unsupported file type: \(extensionName, privacy: .public)")
+            throw UpdateError.unsupportedFileType
+        }
+
+        logger.info("Successfully added key=\(key, privacy: .public) to file=\(fileURL.path, privacy: .public)")
+    }
+
+    private func addToStringsFile(fileURL: URL, key: String, value: String) throws {
+        logger.debug("Adding key to .strings file: \(fileURL.path, privacy: .public)")
+        var content = try String(contentsOf: fileURL, encoding: .utf8)
+
+        // Check for duplicates
+        let escapedKey = NSRegularExpression.escapedPattern(for: key)
+        let pattern = #"(?m)^([ \t]*)"# + escapedKey + #"\"[ \t]*=[ \t]*\"((?:\\.|[^\\\"\\])*)\"[ \t]*;"#
+        let range = NSRange(content.startIndex..<content.endIndex, in: content)
+        if let regex = try? NSRegularExpression(pattern: pattern, options: []),
+           regex.firstMatch(in: content, options: [], range: range) != nil {
+            throw UpdateError.invalidFileContents(reason: "Key '\(key)' already exists in this file.")
+        }
+
+        if !content.hasSuffix("\n") && !content.isEmpty {
+            content.append("\n")
+        }
+        content.append("\"\(escapeStringsValue(key))\" = \"\(escapeStringsValue(value))\";\n")
+        try write(content: content, to: fileURL)
+    }
+
+    private func addToXCStringsFile(fileURL: URL, key: String, translations: [String: String]) throws {
+        logger.debug("Adding key to .xcstrings file: \(fileURL.path, privacy: .public)")
+        let data = try Data(contentsOf: fileURL)
+        guard var json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
+            throw UpdateError.invalidFileContents(reason: "Failed to parse JSON structure of .xcstrings file.")
+        }
+
+        var strings = json["strings"] as? [String: Any] ?? [String: Any]()
+
+        if strings[key] != nil {
+            throw UpdateError.invalidFileContents(reason: "Key '\(key)' already exists in this file.")
+        }
+
+        var localizations = [String: Any]()
+        for (lang, val) in translations {
+            localizations[lang] = [
+                "stringUnit": [
+                    "state": "translated",
+                    "value": val
+                ]
+            ]
+        }
+
+        let newEntry: [String: Any] = [
+            "extractionState": "manual",
+            "localizations": localizations
+        ]
+
+        strings[key] = newEntry
+        json["strings"] = strings
+
+        let outputData = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        try outputData.write(to: fileURL, options: .atomic)
+    }
+
     private func updateStringsFile(fileURL: URL, key: String, newValue: String) throws {
         logger.debug("Updating .strings file: \(fileURL.path, privacy: .public)")
         do {

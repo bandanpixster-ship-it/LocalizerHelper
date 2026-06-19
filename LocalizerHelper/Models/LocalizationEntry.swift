@@ -90,7 +90,7 @@ extension LocalizationCatalog {
         if !node.isDirectory {
             switch node.fileKind {
             case .strings:
-                if let parsed = try? parsers.strings.parse(fileURL: node.url) {
+                if let parsed = try? parsers.strings.parse(node.url) {
                     entries.append(contentsOf: parsed)
                 }
             case .xcstrings:

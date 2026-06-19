@@ -7,9 +7,12 @@ struct LocalizationDetailView: View {
     let sourceFileForLanguage: (LocalizationKey, String) -> URL?
     let onSaveTranslations: (LocalizationKey, [String: String]) -> Void
 
+    let onTranslate: (String, String) async throws -> String
+
     @State private var editSession: EditSession?
     @State private var editValues: [String: String] = [:]
     @State private var showSaveConfirmation = false
+    @State private var isTranslating = false
 
     struct EditSession: Identifiable, Equatable {
         let id = UUID()
@@ -37,7 +40,6 @@ struct LocalizationDetailView: View {
             }
             .listStyle(.plain)
             .onChange(of: editSession) { oldSession, newSession in
-                // When edit session changes, initialize editValues immediately
                 if let session = newSession {
                     editValues = session.originalValues
                 } else {
@@ -46,12 +48,24 @@ struct LocalizationDetailView: View {
             }
             .sheet(item: $editSession) { session in
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("Edit translations for \(session.key.key)")
-                        .font(.headline)
-
-                    Text("Key cannot be modified")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Edit translations for \(session.key.key)")
+                                .font(.headline)
+                            Text("Key cannot be modified")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if isTranslating {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button("Auto-Translate All") {
+                                autoTranslateAll(key: session.key, availableLanguages: session.availableLanguages)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
 
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 16) {
@@ -71,13 +85,26 @@ struct LocalizationDetailView: View {
                                                 .foregroundStyle(.secondary)
                                         }
                                     }
-                                    TextField("Translation", text: Binding(
-                                        get: { editValues[language] ?? "" },
-                                        set: { editValues[language] = $0 }
-                                    ))
-                                    .textFieldStyle(.roundedBorder)
-                                    .disabled(!editable)
-                                    .opacity(editable ? 1 : 0.5)
+                                    
+                                    HStack {
+                                        TextField("Translation", text: Binding(
+                                            get: { editValues[language] ?? "" },
+                                            set: { editValues[language] = $0 }
+                                        ))
+                                        .textFieldStyle(.roundedBorder)
+                                        .disabled(!editable)
+                                        .opacity(editable ? 1 : 0.5)
+
+                                        if editable && language != "en" {
+                                            Button(action: {
+                                                translateField(key: session.key.key, lang: language)
+                                            }) {
+                                                Image(systemName: "translate")
+                                            }
+                                            .buttonStyle(.borderless)
+                                            .disabled(isTranslating)
+                                        }
+                                    }
 
                                     if !originalValue.isEmpty {
                                         Text("Original: \(originalValue)")
@@ -118,6 +145,45 @@ struct LocalizationDetailView: View {
                 } message: {
                     Text("You changed translations for \(session.key.key). These updates will be written to the project files.")
                 }
+            }
+        }
+    }
+
+    private func translateField(key: String, lang: String) {
+        isTranslating = true
+        Task {
+            do {
+                let result = try await onTranslate(key, lang)
+                await MainActor.run {
+                    editValues[lang] = result
+                    isTranslating = false
+                }
+            } catch {
+                await MainActor.run {
+                    isTranslating = false
+                }
+            }
+        }
+    }
+
+    private func autoTranslateAll(key: LocalizationKey, availableLanguages: [String]) {
+        isTranslating = true
+        Task {
+            var updated = editValues
+            for lang in availableLanguages {
+                let editable = sourceFileForLanguage(key, lang) != nil
+                if editable && lang != "en" {
+                    do {
+                        let result = try await onTranslate(key.key, lang)
+                        updated[lang] = result
+                    } catch {
+                        // ignore/fallback
+                    }
+                }
+            }
+            await MainActor.run {
+                editValues = updated
+                isTranslating = false
             }
         }
     }
@@ -311,6 +377,9 @@ struct LocalizationDetailView: View {
         languages: ["en", "de"],
         onToggleIgnore: { _ in },
         sourceFileForLanguage: { _, _ in nil },
-        onSaveTranslations: { _, _ in }
+        onSaveTranslations: { _, _ in },
+        onTranslate: { _, _ async throws -> String in
+            return ""
+        }
     )
 }

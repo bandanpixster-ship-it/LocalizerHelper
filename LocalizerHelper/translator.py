@@ -48,13 +48,17 @@ def install_missing_packages():
 
         try:
             for package in missing_packages:
-                subprocess.check_call([
+                cmd = [
                     sys.executable,
                     "-m",
                     "pip",
                     "install",
                     package
-                ])
+                ]
+                try:
+                    subprocess.check_call(cmd + ["--break-system-packages"])
+                except Exception:
+                    subprocess.check_call(cmd)
 
             print("✓ All packages installed successfully\n")
 
@@ -83,6 +87,13 @@ parser.add_argument(
 parser.add_argument(
     '--no-interactive',
     action='store_true'
+)
+
+parser.add_argument(
+    '--batch-size',
+    type=int,
+    default=10,
+    help="Number of concurrent translation threads"
 )
 
 args = parser.parse_args()
@@ -520,9 +531,40 @@ print("====================================")
 # BUILD TRANSLATION TASKS
 # ======================================================
 
+def get_ignored_keys(resource_dir):
+    project_dir = Path(resource_dir).resolve()
+    xcodeproj_files = list(project_dir.glob("*.xcodeproj"))
+    if not xcodeproj_files and project_dir.parent:
+        xcodeproj_files = list(project_dir.parent.glob("*.xcodeproj"))
+        if xcodeproj_files:
+            project_dir = project_dir.parent
+    if len(xcodeproj_files) == 1:
+        project_id = xcodeproj_files[0].stem
+    else:
+        project_id = project_dir.name
+        if not project_id:
+            project_id = "UntitledProject"
+    
+    home = Path.home()
+    ignored_keys_file = home / "Library" / "Application Support" / "LocalizerHelper" / "Projects" / project_id / "ignored-keys.json"
+    if ignored_keys_file.exists():
+        try:
+            with open(ignored_keys_file, "r", encoding="utf-8") as f:
+                records = json.load(f)
+                return {(r.get("table", "Localizable"), r.get("key")) for r in records}
+        except Exception as e:
+            print(f"Warning: could not read ignored keys: {e}")
+    return set()
+
+ignored_keys = get_ignored_keys(BASE_DIR)
+table_name = Path(XCSTRINGS_FILE).stem
+
 translation_tasks = []
 
 for key, item in strings.items():
+
+    if (table_name, key) in ignored_keys:
+        continue
 
     localizations = item.setdefault(
         "localizations",
@@ -728,7 +770,7 @@ results = []
 start_time = time.time()
 
 with ThreadPoolExecutor(
-    max_workers=MAX_THREADS
+    max_workers=args.batch_size
 ) as executor:
 
     futures = [

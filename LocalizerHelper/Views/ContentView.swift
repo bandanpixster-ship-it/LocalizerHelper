@@ -87,6 +87,14 @@ struct ContentView: View {
                         .truncationMode(.middle)
                 }
                 Spacer()
+                Button(action: {
+                    if let url = viewModel.selectedNode?.url {
+                        NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
+                    }
+                }) {
+                    Label("Open in Finder", systemImage: "folder")
+                }
+                .help("Open file or folder in Finder")
                 if showsLocalizationDetail {
                     AuditSummaryView(
                         errors: viewModel.issueSummary.errors,
@@ -114,7 +122,18 @@ struct ContentView: View {
             case .swift:
                 SwiftStringsDetailView(
                     literals: viewModel.filteredSwiftLiterals,
-                    pendingLiterals: viewModel.missingSwiftLiterals
+                    pendingLiterals: viewModel.missingSwiftLiterals,
+                    localizationFiles: viewModel.localizationFiles,
+                    languages: viewModel.catalog.languages,
+                    isKeyDuplicate: { key, fileURL in
+                        viewModel.catalog.entries.contains { $0.sourceFile == fileURL && $0.key.key == key }
+                    },
+                    onAddLocalization: { key, fileURL, translations in
+                        viewModel.addLocalization(key: key, targetFileURL: fileURL, translations: translations)
+                    },
+                    onTranslate: { text, lang in
+                        try await viewModel.translate(text: text, to: lang)
+                    }
                 )
             case .directory, .strings, .xcstrings:
                 if viewModel.filteredAuditResults.isEmpty && selected.fileKind == .directory {
@@ -125,7 +144,10 @@ struct ContentView: View {
                         languages: viewModel.catalog.languages,
                         onToggleIgnore: { viewModel.toggleIgnore(key: $0) },
                         sourceFileForLanguage: { viewModel.sourceFileURL(for: $0, language: $1) },
-                        onSaveTranslations: { viewModel.saveTranslations(key: $0, values: $1) }
+                        onSaveTranslations: { viewModel.saveTranslations(key: $0, values: $1) },
+                        onTranslate: { text, lang in
+                            try await viewModel.translate(text: text, to: lang)
+                        }
                     )
                 }
             case .other:

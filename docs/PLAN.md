@@ -4,16 +4,16 @@
 
 ## Implementation progress
 
-> **Last updated:** 2026-06-17 — Phases 0–4 implemented; Phase 5 partially done.
+> **Last updated:** 2026-06-17 — Phases 0–5 fully implemented, including edit/save functionality.
 
 | Phase | Status | Notes |
 |-------|--------|-------|
-| 0 Shell & open folder | Done | Security-scoped access on open; bookmark helpers in `ProjectStore` (persist/reopen deferred to Phase 5) |
+| 0 Shell & open folder | Done | Security-scoped access on open; bookmark helpers in `ProjectStore` |
 | 1 Swift extraction | Done | Lightweight tokenizer (no SwiftSyntax) |
-| 2 Localization parsing | Done | `LocalizationKey` lives in `LocalizationEntry.swift` (not a separate file) |
+| 2 Localization parsing | Done | `LocalizationKey` lives in `LocalizationEntry.swift` |
 | 3 Audit & detail UI | Done | Search + filter wired in toolbar area |
-| 4 Ignore list & store | Done | Context menu on localization rows |
-| 5 Polish | Partial | Background scan + cancel on re-open done; recent projects not started |
+| 4 Ignore list & store | Done | Context menu on localization rows; inline editing & saving of translations |
+| 5 Polish | Done | Background scan + cancel on re-open; recent projects auto-open on launch |
 
 **Build note:** Project uses `PBXFileSystemSynchronizedRootGroup` — new files under `LocalizerHelper/` are picked up automatically by Xcode.
 
@@ -26,8 +26,7 @@
 **Not in scope (v1):**
 
 - iOS / iPad builds
-- Editing or writing localization files
-- AI-assisted translation
+- AI-assisted translation (within the app UI itself, though a Python utility script `translator.py` is included for external automation)
 - Export (CSV, JSON, markdown reports)
 - Scanning `Pods`, `DerivedData`, or `.git`
 
@@ -400,16 +399,17 @@ LocalizerHelper/
 
 ### Phase 5 — Polish
 
-- [ ] Recent projects (optional)
+- [x] Recent projects (auto-opens the last-opened project on app startup using security-scoped bookmark persistence)
 - [x] Performance: background scan, cancel on re-open
 - [x] Empty states, error toasts for unreadable files _(scan errors via alert; unreadable-file list tracked in VM, no dedicated toast yet)_
+- [x] Localization editing support: `LocalizationFileUpdater` handles inline modifications of `.strings` and `.xcstrings` files, and detail UI provides an editing sheet.
+- [x] Python Translator Utility: `translator.py` Google Translate script for batch-translating localizations directly.
 
 ### Future (explicitly deferred)
 
 - Export audit report
-- AI translation suggestions
+- AI translation suggestions integrated directly inside the Swift app UI
 - Swift ↔ localization key cross-reference
-- Inline editing of `.strings` / `.xcstrings`
 - iOS / iPad targets
 
 ---

@@ -14,6 +14,13 @@ struct ProjectTreeView: View {
                         .foregroundStyle(iconColor(for: node))
                 }
                 .tag(node)
+                .contextMenu {
+                    Button(action: {
+                        NSWorkspace.shared.selectFile(node.url.path, inFileViewerRootedAtPath: node.url.deletingLastPathComponent().path)
+                    }) {
+                        Label("Open in Finder", systemImage: "folder")
+                    }
+                }
             }
         }
         .listStyle(.sidebar)
