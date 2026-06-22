@@ -11,12 +11,20 @@ struct TranslationService {
     // Google Translate unofficial public endpoint — no key required, rate-limited per IP.
     private static let googleBase = "https://translate.googleapis.com/translate_a/single"
 
+    // LibreTranslate public instance — open-source, no key required on this instance.
+    private static let libreTranslateBase = "https://translate.fedilab.app/translate"
+
     func translate(text: String, to language: String) async throws -> String {
         do {
             return try await translateViaMyMemory(text: text, to: language)
-        } catch TranslationError.unsupportedLanguagePair, TranslationError.quotaExceeded {
-            Self.logger.debug("MyMemory failed for '\(language, privacy: .public)', falling back to Google Translate")
-            return try await translateViaGoogle(text: text, to: language)
+        } catch {
+            Self.logger.debug("MyMemory failed (\(error.localizedDescription, privacy: .public)), falling back to Google Translate")
+            do {
+                return try await translateViaGoogle(text: text, to: language)
+            } catch {
+                Self.logger.debug("Google Translate failed (\(error.localizedDescription, privacy: .public)), falling back to LibreTranslate")
+                return try await translateViaLibreTranslate(text: text, to: language)
+            }
         }
     }
 
@@ -92,6 +100,35 @@ struct TranslationService {
         }
 
         Self.logger.debug("Translated '\(text, privacy: .public)' → '\(translated, privacy: .public)' via Google (en→\(targetCode, privacy: .public))")
+        return translated
+    }
+
+    // MARK: - LibreTranslate (open-source, public instance fallback)
+
+    private func translateViaLibreTranslate(text: String, to language: String) async throws -> String {
+        let targetCode = normalizedLanguageCode(language)
+        guard let url = URL(string: Self.libreTranslateBase) else { throw TranslationError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: String] = ["q": text, "source": "en", "target": targetCode, "format": "text"]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw TranslationError.httpError(http.statusCode)
+        }
+
+        guard
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let translated = json["translatedText"] as? String,
+            !translated.isEmpty
+        else {
+            throw TranslationError.unexpectedResponse
+        }
+
+        Self.logger.debug("Translated '\(text, privacy: .public)' → '\(translated, privacy: .public)' via LibreTranslate (en→\(targetCode, privacy: .public))")
         return translated
     }
 
