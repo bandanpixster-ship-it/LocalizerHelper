@@ -157,30 +157,38 @@ final class ProjectViewModel {
 
     func saveTranslations(key: LocalizationKey, values: [String: String]) {
         Self.logger.debug("Starting save for key: \\(key.key, privacy: .public)")
-        
-        let languageEntries = values.compactMap { language, value -> (language: String, entry: LocalizationEntry)? in
-            guard let entry = catalog.entry(for: key, language: language) else {
-                Self.logger.debug("No entry found for language: \\(language, privacy: .public)")
-                return nil
+
+        // For xcstrings, the same file holds all languages — use it as fallback when no entry exists for a language yet
+        let xcstringsFile = catalog.entries
+            .first { $0.key == key && $0.sourceFile.pathExtension.lowercased() == "xcstrings" }?
+            .sourceFile
+
+        let languageFiles: [(language: String, file: URL, existingValue: String)] = values.compactMap { language, _ in
+            if let entry = catalog.entry(for: key, language: language) {
+                return (language, entry.sourceFile, entry.value)
             }
-            return (language: language, entry: entry)
+            if let file = xcstringsFile {
+                return (language, file, "")
+            }
+            Self.logger.debug("No file found for language: \\(language, privacy: .public)")
+            return nil
         }
 
-        guard !languageEntries.isEmpty else {
+        guard !languageFiles.isEmpty else {
             Self.logger.error("No editable translations found for key: \\(key.key, privacy: .public)")
             scanError = "No editable translations were found for this key."
             return
         }
 
-        Self.logger.debug("Found \\(languageEntries.count, privacy: .public) editable language entries")
+        Self.logger.debug("Found \\(languageFiles.count, privacy: .public) editable language entries")
         var updatedFiles = Set<URL>()
         do {
-            for (language, entry) in languageEntries {
+            for (language, file, existingValue) in languageFiles {
                 let newValue = values[language] ?? ""
-                if newValue != entry.value {
+                if newValue != existingValue && !newValue.isEmpty {
                     Self.logger.debug("Updating \\(language, privacy: .public): \\(newValue, privacy: .public)")
-                    try fileUpdater.updateTranslation(in: entry.sourceFile, key: key.key, language: language, newValue: newValue)
-                    updatedFiles.insert(entry.sourceFile)
+                    try fileUpdater.updateTranslation(in: file, key: key.key, language: language, newValue: newValue)
+                    updatedFiles.insert(file)
                 } else {
                     Self.logger.debug("No change for language \\(language, privacy: .public)")
                 }
@@ -210,7 +218,13 @@ final class ProjectViewModel {
     }
 
     func sourceFileURL(for key: LocalizationKey, language: String) -> URL? {
-        catalog.entry(for: key, language: language)?.sourceFile
+        if let entry = catalog.entry(for: key, language: language) {
+            return entry.sourceFile
+        }
+        // For xcstrings, one file holds all languages — allow editing even if this language has no entry yet
+        return catalog.entries
+            .first { $0.key == key && $0.sourceFile.pathExtension.lowercased() == "xcstrings" }?
+            .sourceFile
     }
 
     private func refreshCatalogEntries(for fileURL: URL) {

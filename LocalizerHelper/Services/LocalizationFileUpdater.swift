@@ -171,23 +171,22 @@ struct LocalizationFileUpdater {
 
     private func updateXCStringsFile(fileURL: URL, key: String, language: String, newValue: String) throws {
         logger.debug("Updating .xcstrings file: \(fileURL.path, privacy: .public) for language: \(language, privacy: .public)")
-        do {
-            var content = try String(contentsOf: fileURL, encoding: .utf8)
-            logger.debug("Read file successfully, length: \(content.count, privacy: .public) characters")
-
-            guard let range = try rangeOfXCStringsValue(in: content, key: key, language: language) else {
-                logger.error("Failed to find language entry in .xcstrings: key=\(key, privacy: .public) language=\(language, privacy: .public)")
-                throw UpdateError.languageNotFound(language: language)
-            }
-            let escaped = escapeJSONValue(newValue)
-            content.replaceSubrange(range, with: escaped)
-            try write(content: content, to: fileURL)
-        } catch let error as UpdateError {
-            throw error
-        } catch {
-            logger.error("Error reading .xcstrings file: \(error.localizedDescription, privacy: .public)")
-            throw UpdateError.writeFailed(reason: error.localizedDescription)
+        let data = try Data(contentsOf: fileURL)
+        guard var json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw UpdateError.invalidFileContents(reason: "Failed to parse JSON structure of .xcstrings file.")
         }
+        guard var strings = json["strings"] as? [String: Any],
+              var entry = strings[key] as? [String: Any] else {
+            throw UpdateError.keyNotFound(key: key)
+        }
+        var localizations = entry["localizations"] as? [String: Any] ?? [:]
+        localizations[language] = ["stringUnit": ["state": "translated", "value": newValue]]
+        entry["localizations"] = localizations
+        strings[key] = entry
+        json["strings"] = strings
+        let outputData = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        try outputData.write(to: fileURL, options: .atomic)
+        logger.info("Successfully updated language '\(language, privacy: .public)' for key '\(key, privacy: .public)'")
     }
 
     private func write(content: String, to fileURL: URL) throws {
@@ -248,93 +247,4 @@ struct LocalizationFileUpdater {
         return escaped
     }
 
-    private func rangeOfXCStringsValue(in content: String, key: String, language: String) throws -> Range<String.Index>? {
-        logger.debug("Searching for .xcstrings entry: key=\(key, privacy: .public) language=\(language, privacy: .public)")
-        
-        let entryStart = try rangeOfXCStringsEntry(in: content, key: key)
-        logger.debug("Found key entry")
-        
-        let localizationsStart = try rangeOfXCStringsObjectKey("localizations", in: content, range: entryStart.upperBound..<content.endIndex)
-        logger.debug("Found localizations object")
-        
-        let languageStart = try rangeOfXCStringsObjectKey(language, in: content, range: localizationsStart.upperBound..<content.endIndex)
-        logger.debug("Found language entry: \(language, privacy: .public)")
-        
-        let stringUnitStart = try rangeOfXCStringsObjectKey("stringUnit", in: content, range: languageStart.upperBound..<content.endIndex)
-        logger.debug("Found stringUnit object")
-        
-        let valueKeyRange = try rangeOfXCStringsObjectKey("value", in: content, range: stringUnitStart.upperBound..<content.endIndex)
-        logger.debug("Found value key")
-
-        guard let quoteRange = content.range(of: "\"", range: valueKeyRange.upperBound..<content.endIndex) else {
-            logger.error("Could not find opening quote for value in language: \(language, privacy: .public)")
-            throw UpdateError.invalidFileContents(reason: "No opening quote found for value")
-        }
-
-        let valueStart = content.index(after: quoteRange.lowerBound)
-        guard let valueEnd = findClosingJSONStringQuote(in: content, start: valueStart) else {
-            logger.error("Could not find closing quote for value in language: \(language, privacy: .public)")
-            throw UpdateError.invalidFileContents(reason: "No closing quote found for value")
-        }
-
-        logger.debug("Successfully located value range for language: \(language, privacy: .public)")
-        return valueStart..<valueEnd
-    }
-
-    private func rangeOfXCStringsEntry(in content: String, key: String) throws -> Range<String.Index> {
-        logger.debug("Searching for xcstrings key entry: \(key, privacy: .public)")
-        let escapedKey = escapeJSONKey(key)
-        guard let range = content.range(of: "\"\(escapedKey)\"") else {
-            logger.error("Key not found in xcstrings: \(key, privacy: .public)")
-            throw UpdateError.keyNotFound(key: key)
-        }
-        return range
-    }
-
-    private func rangeOfXCStringsObjectKey(_ name: String, in content: String, range searchRange: Range<String.Index>) throws -> Range<String.Index> {
-        logger.debug("Searching for xcstrings object key: \(name, privacy: .public)")
-        let escapedKey = escapeJSONKey(name)
-        guard let keyRange = content.range(of: "\"\(escapedKey)\"", range: searchRange) else {
-            logger.error("Object key not found: \(name, privacy: .public)")
-            throw UpdateError.invalidFileContents(reason: "Object key '\(name)' not found")
-        }
-        return keyRange
-    }
-
-    private func findClosingJSONStringQuote(in content: String, start: String.Index) -> String.Index? {
-        var index = start
-        while index < content.endIndex {
-            let current = content[index]
-            if current == "\"" {
-                return index
-            }
-            if current == "\\" {
-                index = content.index(after: index)
-                if index == content.endIndex { break }
-            }
-            index = content.index(after: index)
-        }
-        return nil
-    }
-
-    private func escapeJSONValue(_ value: String) -> String {
-        var escaped = ""
-        for character in value {
-            switch character {
-            case "\\": escaped.append("\\\\")
-            case "\"": escaped.append("\\\"")
-            case "\n": escaped.append("\\n")
-            case "\t": escaped.append("\\t")
-            case "\r": escaped.append("\\r")
-            default: escaped.append(character)
-            }
-        }
-        return escaped
-    }
-
-    private func escapeJSONKey(_ key: String) -> String {
-        key
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-    }
 }

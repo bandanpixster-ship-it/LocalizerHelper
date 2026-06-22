@@ -6,35 +6,35 @@ struct TranslationService {
     static let shared = TranslationService()
 
     // MyMemory free tier: 5 000 chars/day, no key required.
-    // Docs: https://mymemory.translated.net/doc/spec.php
     private static let myMemoryBase = "https://api.mymemory.translated.net/get"
 
+    // Google Translate unofficial public endpoint — no key required, rate-limited per IP.
+    private static let googleBase = "https://translate.googleapis.com/translate_a/single"
+
     func translate(text: String, to language: String) async throws -> String {
-        return try await translateViaMyMemory(text: text, to: language)
+        do {
+            return try await translateViaMyMemory(text: text, to: language)
+        } catch TranslationError.unsupportedLanguagePair, TranslationError.quotaExceeded {
+            Self.logger.debug("MyMemory failed for '\(language, privacy: .public)', falling back to Google Translate")
+            return try await translateViaGoogle(text: text, to: language)
+        }
     }
 
     // MARK: - MyMemory
 
     private func translateViaMyMemory(text: String, to language: String) async throws -> String {
         let targetCode = normalizedLanguageCode(language)
-        let langpair = "en|\(targetCode)"
-
         var components = URLComponents(string: Self.myMemoryBase)!
         components.queryItems = [
             URLQueryItem(name: "q", value: text),
-            URLQueryItem(name: "langpair", value: langpair)
+            URLQueryItem(name: "langpair", value: "en|\(targetCode)")
         ]
-
-        guard let url = components.url else {
-            throw TranslationError.invalidURL
-        }
+        guard let url = components.url else { throw TranslationError.invalidURL }
 
         let (data, response) = try await URLSession.shared.data(from: url)
-
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw TranslationError.httpError(http.statusCode)
         }
-
         guard
             let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
             let responseData = json["responseData"] as? [String: Any],
@@ -43,23 +43,60 @@ struct TranslationService {
             throw TranslationError.unexpectedResponse
         }
 
-        // MyMemory echoes back the source text when the language pair is unsupported
-        if translated.lowercased() == text.lowercased() {
-            throw TranslationError.unsupportedLanguagePair(targetCode)
-        }
-
-        // Quota exceeded returns a message in the translated field
         if let status = json["responseStatus"] as? Int, status == 403 {
             throw TranslationError.quotaExceeded
         }
 
-        Self.logger.debug("Translated '\(text)' → '\(translated)' [\(targetCode)]")
+        // MyMemory echoes back the source when the language pair is unsupported
+        if translated.lowercased() == text.lowercased() {
+            throw TranslationError.unsupportedLanguagePair(targetCode)
+        }
+
+        Self.logger.debug("Translated '\(text, privacy: .public)' → '\(translated, privacy: .public)' via MyMemory (en→\(targetCode, privacy: .public))")
+        return translated
+    }
+
+    // MARK: - Google Translate (unofficial public endpoint)
+
+    private func translateViaGoogle(text: String, to language: String) async throws -> String {
+        let targetCode = normalizedLanguageCode(language)
+        var components = URLComponents(string: Self.googleBase)!
+        components.queryItems = [
+            URLQueryItem(name: "client", value: "gtx"),
+            URLQueryItem(name: "sl", value: "en"),
+            URLQueryItem(name: "tl", value: targetCode),
+            URLQueryItem(name: "dt", value: "t"),
+            URLQueryItem(name: "q", value: text)
+        ]
+        guard let url = components.url else { throw TranslationError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw TranslationError.httpError(http.statusCode)
+        }
+
+        // Response: [ [ ["translated","source",...], ... ], null, "en", ... ]
+        guard
+            let root = try JSONSerialization.jsonObject(with: data) as? [Any],
+            let segments = root.first as? [[Any]]
+        else {
+            throw TranslationError.unexpectedResponse
+        }
+
+        let translated = segments.compactMap { $0.first as? String }.joined()
+        guard !translated.isEmpty else {
+            throw TranslationError.unsupportedLanguagePair(targetCode)
+        }
+
+        Self.logger.debug("Translated '\(text, privacy: .public)' → '\(translated, privacy: .public)' via Google (en→\(targetCode, privacy: .public))")
         return translated
     }
 
     // MARK: - Language code normalisation
 
-    /// Maps Apple/Xcode locale identifiers to the BCP-47 codes MyMemory expects.
     private func normalizedLanguageCode(_ code: String) -> String {
         let lower = code.lowercased().replacingOccurrences(of: "_", with: "-")
         switch lower {
@@ -68,7 +105,6 @@ struct TranslationService {
         case "pt-br":            return "pt-BR"
         case "pt-pt", "pt":      return "pt-PT"
         default:
-            // Strip region if present (e.g. "en-US" → "en") for broad language codes
             return String(lower.prefix(2))
         }
     }
@@ -92,7 +128,7 @@ enum TranslationError: LocalizedError {
         case .unexpectedResponse:
             return "Translation service returned an unrecognised response."
         case .unsupportedLanguagePair(let lang):
-            return "Language '\(lang)' is not supported by the translation service."
+            return "Language '\(lang)' is not supported by either translation service."
         case .quotaExceeded:
             return "Daily translation quota exceeded (5 000 chars/day on the free tier)."
         }

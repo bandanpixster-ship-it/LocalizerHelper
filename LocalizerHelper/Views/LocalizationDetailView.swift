@@ -19,6 +19,7 @@ struct LocalizationDetailView: View {
         let key: LocalizationKey
         let availableLanguages: [String]
         let originalValues: [String: String]
+        let issues: [AuditIssue]
     }
 
     var body: some View {
@@ -69,11 +70,20 @@ struct LocalizationDetailView: View {
 
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 16) {
-                            ForEach(session.availableLanguages, id: \.self) { language in
+                            ForEach(sortedLanguages(session: session), id: \.self) { language in
                                 let editable = sourceFileForLanguage(session.key, language) != nil
                                 let originalValue = session.originalValues[language] ?? ""
+                                let langIssues = session.issues.filter { $0.language == language }
+                                let langSeverity: AuditSeverity? = langIssues.contains(where: { $0.severity == .error }) ? .error
+                                    : langIssues.contains(where: { $0.severity == .warning }) ? .warning
+                                    : nil
                                 VStack(alignment: .leading, spacing: 6) {
-                                    HStack {
+                                    HStack(spacing: 6) {
+                                        if let sev = langSeverity {
+                                            Circle()
+                                                .fill(sev == .error ? Color.red : Color.orange)
+                                                .frame(width: 7, height: 7)
+                                        }
                                         Text(displayLanguageName(language))
                                             .font(.subheadline.weight(.semibold))
                                         Text(language.uppercased())
@@ -84,14 +94,23 @@ struct LocalizationDetailView: View {
                                                 .font(.caption)
                                                 .foregroundStyle(.secondary)
                                         }
+                                        if let issue = langIssues.first {
+                                            Text(issue.message)
+                                                .font(.caption)
+                                                .foregroundStyle(langSeverity == .error ? .red : .orange)
+                                        }
                                     }
-                                    
+
                                     HStack {
                                         TextField("Translation", text: Binding(
                                             get: { editValues[language] ?? "" },
                                             set: { editValues[language] = $0 }
                                         ))
                                         .textFieldStyle(.roundedBorder)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 6)
+                                                .stroke(langSeverity == .error ? Color.red.opacity(0.6) : langSeverity == .warning ? Color.orange.opacity(0.5) : .clear, lineWidth: 1.5)
+                                        )
                                         .disabled(!editable)
                                         .opacity(editable ? 1 : 0.5)
 
@@ -159,6 +178,7 @@ struct LocalizationDetailView: View {
                     isTranslating = false
                 }
             } catch {
+                print(error.localizedDescription)
                 await MainActor.run {
                     isTranslating = false
                 }
@@ -202,22 +222,11 @@ struct LocalizationDetailView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
 
-                HStack(alignment: .top, spacing: 8) {
-                    Text(result.englishValue)
-                        .foregroundStyle(.primary)
-                        .font(.subheadline)
-                        .lineLimit(2)
-                        .truncationMode(.tail)
-
-                    Button {
-                        openEditSession(for: result)
-                    } label: {
-                        Image(systemName: "pencil")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(Color.accentColor)
-                }
+                Text(result.englishValue)
+                    .foregroundStyle(.primary)
+                    .font(.subheadline)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
 
                 if !result.issues.isEmpty {
                     DisclosureGroup("Issues (\(result.issues.count))") {
@@ -250,13 +259,23 @@ struct LocalizationDetailView: View {
                 }
                 .frame(maxWidth: 420)
 
-                Button {
-                    onToggleIgnore(result.key)
-                } label: {
-                    Label(result.issues.contains(where: { $0.severity == .ignored }) ? "Unignore" : "Ignore", systemImage: result.issues.contains(where: { $0.severity == .ignored }) ? "eye" : "eye.slash")
+                HStack(spacing: 8) {
+                    Button {
+                        openEditSession(for: result)
+                    } label: {
+                        Label("Edit", systemImage: "pencil")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+
+                    Button {
+                        onToggleIgnore(result.key)
+                    } label: {
+                        Label(result.issues.contains(where: { $0.severity == .ignored }) ? "Unignore" : "Ignore", systemImage: result.issues.contains(where: { $0.severity == .ignored }) ? "eye" : "eye.slash")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.mini)
             }
             .frame(minWidth: 140)
         }
@@ -323,7 +342,23 @@ struct LocalizationDetailView: View {
             accumulator[language] = language == "en" ? result.englishValue : (result.translations[language] ?? "")
         }
         editValues = values
-        editSession = EditSession(key: result.key, availableLanguages: languages, originalValues: values)
+        editSession = EditSession(key: result.key, availableLanguages: languages, originalValues: values, issues: result.issues)
+    }
+
+    private func sortedLanguages(session: EditSession) -> [String] {
+        session.availableLanguages.sorted { a, b in
+            let severityRank: (String) -> Int = { lang in
+                let issues = session.issues.filter { $0.language == lang }
+                if issues.contains(where: { $0.severity == .error }) { return 0 }
+                if issues.contains(where: { $0.severity == .warning }) { return 1 }
+                return 2
+            }
+            let ra = severityRank(a), rb = severityRank(b)
+            if ra != rb { return ra < rb }
+            if a == "en" { return true }
+            if b == "en" { return false }
+            return a < b
+        }
     }
 
     private var hasSaveChanges: Bool {
