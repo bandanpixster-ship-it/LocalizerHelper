@@ -63,7 +63,7 @@ struct LocalizationFileUpdater {
         logger.info("Successfully updated translation for key=\(key, privacy: .public) in language=\(language, privacy: .public)")
     }
 
-    func addTranslation(to fileURL: URL, key: String, translations: [String: String]) throws {
+    func addTranslation(to fileURL: URL, key: String, translations: [String: String], comment: String = "") throws {
         logger.debug("Attempting to add translation: key=\(key, privacy: .public) to file=\(fileURL.path, privacy: .public)")
 
         let fileManager = FileManager.default
@@ -84,9 +84,9 @@ struct LocalizationFileUpdater {
                 ? fileURL.deletingLastPathComponent().deletingPathExtension().lastPathComponent
                 : "en"
             let value = translations[language] ?? translations["en"] ?? key
-            try addToStringsFile(fileURL: fileURL, key: key, value: value)
+            try addToStringsFile(fileURL: fileURL, key: key, value: value, comment: comment)
         case "xcstrings":
-            try addToXCStringsFile(fileURL: fileURL, key: key, translations: translations)
+            try addToXCStringsFile(fileURL: fileURL, key: key, translations: translations, comment: comment)
         default:
             logger.error("Unsupported file type: \(extensionName, privacy: .public)")
             throw UpdateError.unsupportedFileType
@@ -95,7 +95,7 @@ struct LocalizationFileUpdater {
         logger.info("Successfully added key=\(key, privacy: .public) to file=\(fileURL.path, privacy: .public)")
     }
 
-    private func addToStringsFile(fileURL: URL, key: String, value: String) throws {
+    private func addToStringsFile(fileURL: URL, key: String, value: String, comment: String = "") throws {
         logger.debug("Adding key to .strings file: \(fileURL.path, privacy: .public)")
         var content = try String(contentsOf: fileURL, encoding: .utf8)
 
@@ -111,11 +111,12 @@ struct LocalizationFileUpdater {
         if !content.hasSuffix("\n") && !content.isEmpty {
             content.append("\n")
         }
+        if !comment.isEmpty { content.append("/* \(comment) */\n") }
         content.append("\"\(escapeStringsValue(key))\" = \"\(escapeStringsValue(value))\";\n")
         try write(content: content, to: fileURL)
     }
 
-    private func addToXCStringsFile(fileURL: URL, key: String, translations: [String: String]) throws {
+    private func addToXCStringsFile(fileURL: URL, key: String, translations: [String: String], comment: String = "") throws {
         logger.debug("Adding key to .xcstrings file: \(fileURL.path, privacy: .public)")
         let data = try Data(contentsOf: fileURL)
         guard var json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
@@ -138,10 +139,11 @@ struct LocalizationFileUpdater {
             ]
         }
 
-        let newEntry: [String: Any] = [
+        var newEntry: [String: Any] = [
             "extractionState": "manual",
             "localizations": localizations
         ]
+        if !comment.isEmpty { newEntry["comment"] = comment }
 
         strings[key] = newEntry
         json["strings"] = strings
@@ -187,6 +189,117 @@ struct LocalizationFileUpdater {
         let outputData = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         try outputData.write(to: fileURL, options: .atomic)
         logger.info("Successfully updated language '\(language, privacy: .public)' for key '\(key, privacy: .public)'")
+    }
+
+    func updateComment(in fileURL: URL, key: String, comment: String) throws {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            throw UpdateError.fileNotFound(path: fileURL.path)
+        }
+        guard fileManager.isWritableFile(atPath: fileURL.path) else {
+            throw UpdateError.fileAccessDenied(path: fileURL.path)
+        }
+        switch fileURL.pathExtension.lowercased() {
+        case "xcstrings":
+            try updateCommentInXCStringsFile(fileURL: fileURL, key: key, comment: comment)
+        case "strings":
+            try updateCommentInStringsFile(fileURL: fileURL, key: key, comment: comment)
+        default:
+            throw UpdateError.unsupportedFileType
+        }
+    }
+
+    private func updateCommentInXCStringsFile(fileURL: URL, key: String, comment: String) throws {
+        let data = try Data(contentsOf: fileURL)
+        guard var json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var strings = json["strings"] as? [String: Any],
+              var entry = strings[key] as? [String: Any] else {
+            throw UpdateError.keyNotFound(key: key)
+        }
+        if comment.isEmpty {
+            entry.removeValue(forKey: "comment")
+        } else {
+            entry["comment"] = comment
+        }
+        strings[key] = entry
+        json["strings"] = strings
+        let outputData = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        try outputData.write(to: fileURL, options: .atomic)
+    }
+
+    private func updateCommentInStringsFile(fileURL: URL, key: String, comment: String) throws {
+        var content = try String(contentsOf: fileURL, encoding: .utf8)
+        let escapedKey = NSRegularExpression.escapedPattern(for: key)
+
+        // Pattern: optional existing comment line + the key line
+        let pattern = #"([ \t]*\/\*[^\n]*\n)?([ \t]*""# + escapedKey + #""[ \t]*=[ \t]*"(?:[^"\\]|\\.)*"[ \t]*;[ \t]*)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            throw UpdateError.invalidFileContents(reason: "Failed to compile comment regex.")
+        }
+
+        let nsContent = content as NSString
+        let nsRange = NSRange(content.startIndex..<content.endIndex, in: content)
+        guard let match = regex.firstMatch(in: content, range: nsRange),
+              let fullRange = Range(match.range, in: content) else {
+            throw UpdateError.keyNotFound(key: key)
+        }
+
+        let keyLine = String(content[Range(match.range(at: 2), in: content)!])
+        let replacement = comment.isEmpty ? keyLine : "/* \(comment) */\n\(keyLine)"
+        content.replaceSubrange(fullRange, with: replacement)
+        _ = nsContent // suppress unused warning
+        try write(content: content, to: fileURL)
+    }
+
+    func deleteKey(from fileURL: URL, key: String) throws {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            throw UpdateError.fileNotFound(path: fileURL.path)
+        }
+        guard fileManager.isWritableFile(atPath: fileURL.path) else {
+            throw UpdateError.fileAccessDenied(path: fileURL.path)
+        }
+        switch fileURL.pathExtension.lowercased() {
+        case "strings":
+            try deleteFromStringsFile(fileURL: fileURL, key: key)
+        case "xcstrings":
+            try deleteFromXCStringsFile(fileURL: fileURL, key: key)
+        default:
+            throw UpdateError.unsupportedFileType
+        }
+        logger.info("Deleted key '\(key, privacy: .public)' from \(fileURL.lastPathComponent, privacy: .public)")
+    }
+
+    private func deleteFromStringsFile(fileURL: URL, key: String) throws {
+        var content = try String(contentsOf: fileURL, encoding: .utf8)
+        let escapedKey = NSRegularExpression.escapedPattern(for: key)
+        // Match optional preceding comment line + the key = value; line + trailing newline
+        let pattern = #"(?:[ \t]*\/\*[^\n]*\n)?[ \t]*""# + escapedKey + #""[ \t]*=[ \t]*"(?:[^"\\]|\\.)*"[ \t]*;[ \t]*\n?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            throw UpdateError.invalidFileContents(reason: "Failed to compile delete regex.")
+        }
+        let nsRange = NSRange(content.startIndex..<content.endIndex, in: content)
+        guard let match = regex.firstMatch(in: content, range: nsRange),
+              let matchRange = Range(match.range, in: content) else {
+            throw UpdateError.keyNotFound(key: key)
+        }
+        content.removeSubrange(matchRange)
+        try write(content: content, to: fileURL)
+    }
+
+    private func deleteFromXCStringsFile(fileURL: URL, key: String) throws {
+        let data = try Data(contentsOf: fileURL)
+        guard var json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var strings = json["strings"] as? [String: Any] else {
+            throw UpdateError.invalidFileContents(reason: "Failed to parse JSON.")
+        }
+        guard strings[key] != nil else {
+            throw UpdateError.keyNotFound(key: key)
+        }
+        strings.removeValue(forKey: key)
+        json["strings"] = strings
+        let outputData = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        try outputData.write(to: fileURL, options: .atomic)
     }
 
     private func write(content: String, to fileURL: URL) throws {

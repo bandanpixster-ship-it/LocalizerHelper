@@ -6,18 +6,21 @@ struct SwiftStringLiteral: Identifiable, Hashable {
     let displayPattern: String
     let hasInterpolation: Bool
     let lineNumber: Int
+    let sourceLine: String
 
     init(
         id: UUID = UUID(),
         raw: String,
         displayPattern: String,
         hasInterpolation: Bool,
-        lineNumber: Int
+        lineNumber: Int,
+        sourceLine: String = ""
     ) {
         self.id = id
         self.raw = raw
         self.displayPattern = displayPattern
         self.hasInterpolation = hasInterpolation
         self.lineNumber = lineNumber
+        self.sourceLine = sourceLine
     }
 }

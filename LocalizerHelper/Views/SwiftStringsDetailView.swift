@@ -6,8 +6,10 @@ struct SwiftStringsDetailView: View {
     let localizationFiles: [URL]
     let languages: [String]
     let isKeyDuplicate: (String, URL) -> Bool
-    let onAddLocalization: (String, URL, [String: String]) -> Void
+    let onAddLocalization: (String, URL, [String: String], String) -> Void
     let onTranslate: (String, String) async throws -> String
+    let onAITranslateBatch: ((String, String, String?, [String]) async throws -> [String: String])?
+    let onGenerateComment: ((String, String) async throws -> String)?
     let onCreateLocalizationFile: () async -> URL?
 
     @State private var filter: Filter = .all
@@ -189,6 +191,8 @@ struct SwiftStringsDetailView: View {
                     isKeyDuplicate: isKeyDuplicate,
                     onAdd: onAddLocalization,
                     onTranslate: onTranslate,
+                    onAITranslateBatch: onAITranslateBatch,
+                    onGenerateComment: onGenerateComment,
                     onCreateFile: onCreateLocalizationFile
                 )
             }
@@ -199,34 +203,43 @@ struct SwiftStringsDetailView: View {
 struct AddLocalizationSheet: View {
     let literal: SwiftStringLiteral
     let isKeyDuplicate: (String, URL) -> Bool
-    let onAdd: (String, URL, [String: String]) -> Void
+    let onAdd: (String, URL, [String: String], String) -> Void
     let onTranslate: (String, String) async throws -> String
+    let onAITranslateBatch: ((String, String, String?, [String]) async throws -> [String: String])?
+    let onGenerateComment: ((String, String) async throws -> String)?
     let onCreateFile: () async -> URL?
 
     @Environment(\.dismiss) private var dismiss
 
     @State private var key: String = ""
+    @State private var comment: String = ""
     @State private var selectedFile: URL?
     @State private var localFiles: [URL]
     @State private var localLanguages: [String]
     @State private var translations: [String: String] = [:]
     @State private var isTranslating = false
+    @State private var isGeneratingComment = false
     @State private var isCreatingFile = false
     @State private var validationError: String? = nil
+    @State private var translateError: String?
 
     init(
         literal: SwiftStringLiteral,
         localizationFiles: [URL],
         languages: [String],
         isKeyDuplicate: @escaping (String, URL) -> Bool,
-        onAdd: @escaping (String, URL, [String: String]) -> Void,
+        onAdd: @escaping (String, URL, [String: String], String) -> Void,
         onTranslate: @escaping (String, String) async throws -> String,
+        onAITranslateBatch: ((String, String, String?, [String]) async throws -> [String: String])?,
+        onGenerateComment: ((String, String) async throws -> String)?,
         onCreateFile: @escaping () async -> URL?
     ) {
         self.literal = literal
         self.isKeyDuplicate = isKeyDuplicate
         self.onAdd = onAdd
         self.onTranslate = onTranslate
+        self.onAITranslateBatch = onAITranslateBatch
+        self.onGenerateComment = onGenerateComment
         self.onCreateFile = onCreateFile
 
         var defaultKey = literal.raw
@@ -254,7 +267,7 @@ struct AddLocalizationSheet: View {
                 if !localFiles.isEmpty {
                     Button("Add") {
                         if let selectedFile {
-                            onAdd(key, selectedFile, translations)
+                            onAdd(key, selectedFile, translations, comment)
                             dismiss()
                         }
                     }
@@ -330,6 +343,42 @@ struct AddLocalizationSheet: View {
                     .padding(4)
                 }
 
+                // Developer comment
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if !literal.sourceLine.isEmpty {
+                            Text(literal.sourceLine)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .truncationMode(.middle)
+                        }
+                        TextField("Describe this string's context for translators…", text: $comment, axis: .vertical)
+                            .textFieldStyle(.roundedBorder)
+                            .lineLimit(2...4)
+                    }
+                    .padding(4)
+                } label: {
+                    HStack {
+                        Label("Developer Comment", systemImage: "text.bubble")
+                        Spacer()
+                        if let onGenerateComment {
+                            if isGeneratingComment {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Button {
+                                    generateComment(onGenerateComment)
+                                } label: {
+                                    Label("Generate", systemImage: "sparkles")
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(literal.sourceLine.isEmpty)
+                                .help("Use AI to generate a comment from the source code line")
+                            }
+                        }
+                    }
+                }
+
                 // Translations
                 GroupBox {
                     VStack(spacing: 10) {
@@ -360,18 +409,86 @@ struct AddLocalizationSheet: View {
                         if isTranslating {
                             ProgressView().controlSize(.small)
                         } else {
-                            Button("Auto-Translate All") { autoTranslateAll() }
-                                .buttonStyle(.borderless)
-                                .disabled(key.isEmpty)
+                            HStack(spacing: 12) {
+                                Button("Auto-Translate All") { autoTranslateAll() }
+                                    .buttonStyle(.borderless)
+                                    .disabled(key.isEmpty)
+                                if onAITranslateBatch != nil {
+                                    Button {
+                                        aiTranslateAll()
+                                    } label: {
+                                        Label("AI Translate", systemImage: "sparkles")
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.small)
+                                    .disabled(key.isEmpty)
+                                    .help("Translates all languages in one AI call using context from the developer comment")
+                                }
+                            }
                         }
                     }
                 }
             }
             .padding()
         }
+        .alert("Translation Failed", isPresented: .init(
+            get: { translateError != nil },
+            set: { if !$0 { translateError = nil } }
+        )) {
+            Button("OK") { translateError = nil }
+        } message: {
+            Text(translateError ?? "")
+        }
         .onAppear {
             if translations["en"] == nil { translations["en"] = key }
             validateKey()
+        }
+    }
+
+    private func generateComment(_ generate: @escaping (String, String) async throws -> String) {
+        isGeneratingComment = true
+        let sourceLine = literal.sourceLine
+        let currentKey = key
+        Task {
+            do {
+                let generated = try await generate(sourceLine, currentKey)
+                await MainActor.run {
+                    comment = generated
+                    isGeneratingComment = false
+                }
+            } catch {
+                print("[GenerateComment] failed: \(error.localizedDescription)")
+                await MainActor.run {
+                    translateError = error.localizedDescription
+                    isGeneratingComment = false
+                }
+            }
+        }
+    }
+
+    private func aiTranslateAll() {
+        guard let onAITranslateBatch else { return }
+        let targets = localLanguages.filter { $0 != "en" }
+        guard !targets.isEmpty else { return }
+        let sourceText = translations["en"] ?? key
+        let commentOverride = comment.isEmpty ? nil : comment
+        isTranslating = true
+        Task {
+            do {
+                let results = try await onAITranslateBatch(key, sourceText, commentOverride, targets)
+                await MainActor.run {
+                    for (lang, value) in results where !value.isEmpty {
+                        translations[lang] = value
+                    }
+                    isTranslating = false
+                }
+            } catch {
+                print("[AI Translate] failed: \(error.localizedDescription)")
+                await MainActor.run {
+                    isTranslating = false
+                    translateError = error.localizedDescription
+                }
+            }
         }
     }
 

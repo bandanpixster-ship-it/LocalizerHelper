@@ -78,36 +78,39 @@ struct ContentView: View {
     @ViewBuilder
     private var detailHeader: some View {
         if viewModel.selectedNode != nil {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
                     Text(viewModel.selectedNode?.url.path ?? "")
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                }
-                Spacer()
-                Button(action: {
-                    if let url = viewModel.selectedNode?.url {
-                        NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
-                    }
-                }) {
-                    Label("Open in Finder", systemImage: "folder")
-                }
-                .help("Open file or folder in Finder")
-                if showsLocalizationDetail {
-                    AuditSummaryView(
-                        errors: viewModel.issueSummary.errors,
-                        warnings: viewModel.issueSummary.warnings,
-                        ignored: viewModel.issueSummary.ignored
-                    )
-                    Picker("Filter", selection: $viewModel.detailFilter) {
-                        ForEach(DetailFilter.allCases) { filter in
-                            Text(filter.label).tag(filter)
+                    Spacer(minLength: 8)
+                    Button(action: {
+                        if let url = viewModel.selectedNode?.url {
+                            NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
                         }
+                    }) {
+                        Label("Open in Finder", systemImage: "folder")
                     }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 280)
+                    .help("Open file or folder in Finder")
+                }
+                if showsLocalizationDetail {
+                    HStack {
+                        AuditSummaryView(
+                            errors: viewModel.issueSummary.errors,
+                            warnings: viewModel.issueSummary.warnings,
+                            ignored: viewModel.issueSummary.ignored
+                        )
+                        Spacer(minLength: 8)
+                        Picker("Filter", selection: $viewModel.detailFilter) {
+                            ForEach(DetailFilter.allCases) { filter in
+                                Text(filter.label).tag(filter)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(maxWidth: 320)
+                    }
                 }
             }
             .padding(.horizontal)
@@ -128,12 +131,14 @@ struct ContentView: View {
                     isKeyDuplicate: { key, fileURL in
                         viewModel.catalog.entries.contains { $0.sourceFile == fileURL && $0.key.key == key }
                     },
-                    onAddLocalization: { key, fileURL, translations in
-                        viewModel.addLocalization(key: key, targetFileURL: fileURL, translations: translations)
+                    onAddLocalization: { key, fileURL, translations, comment in
+                        viewModel.addLocalization(key: key, targetFileURL: fileURL, translations: translations, comment: comment)
                     },
                     onTranslate: { text, lang in
                         try await viewModel.translate(text: text, to: lang)
                     },
+                    onAITranslateBatch: aiTranslateBatchHandler,
+                    onGenerateComment: generateCommentHandler,
                     onCreateLocalizationFile: {
                         await viewModel.createLocalizationFile()
                     }
@@ -148,9 +153,13 @@ struct ContentView: View {
                         onToggleIgnore: { viewModel.toggleIgnore(key: $0) },
                         sourceFileForLanguage: { viewModel.sourceFileURL(for: $0, language: $1) },
                         onSaveTranslations: { viewModel.saveTranslations(key: $0, values: $1) },
-                        onTranslate: { text, lang in
-                            try await viewModel.translate(text: text, to: lang)
-                        }
+                        onSaveComment: { viewModel.saveComment(key: $0, comment: $1) },
+                        onTranslate: { text, lang, commentOverride in
+                            try await viewModel.translate(text: text, to: lang, commentOverride: commentOverride)
+                        },
+                        onAITranslateBatch: aiTranslateBatchHandler,
+                        onAffectedFiles: { viewModel.affectedFiles(for: $0) },
+                        onDeleteKey: { viewModel.deleteLocalization(key: $0) }
                     )
                 }
             case .other:
@@ -158,6 +167,20 @@ struct ContentView: View {
             }
         } else {
             EmptySelectionView(node: nil)
+        }
+    }
+
+    private var aiTranslateBatchHandler: ((String, String, String?, [String]) async throws -> [String: String])? {
+        guard AISettings.shared.hasAnyKey else { return nil }
+        return { [viewModel] key, sourceText, commentOverride, languages in
+            try await viewModel.aiTranslateBatch(key: key, sourceText: sourceText, commentOverride: commentOverride, languages: languages)
+        }
+    }
+
+    private var generateCommentHandler: ((String, String) async throws -> String)? {
+        guard AISettings.shared.hasAnyKey else { return nil }
+        return { [viewModel] sourceLine, key in
+            try await viewModel.generateComment(sourceLine: sourceLine, key: key)
         }
     }
 
@@ -176,6 +199,42 @@ struct ContentView: View {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
             .disabled(viewModel.rootURL == nil || viewModel.isScanning)
+        }
+
+        ToolbarItemGroup(placement: .automatic) {
+            // Scope menu
+            Menu {
+                ForEach(SearchScope.allCases) { scope in
+                    Button {
+                        viewModel.searchScope = scope
+                    } label: {
+                        Label(scope.label, systemImage: scope.icon)
+                        if viewModel.searchScope == scope {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            } label: {
+                Label(viewModel.searchScope.label, systemImage: viewModel.searchScope.icon)
+            }
+            .help("Search scope: \(viewModel.searchScope.label)")
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+
+            // Match case toggle
+            Toggle(isOn: $viewModel.searchMatchCase) {
+                Text("Aa")
+                    .font(.system(.body, design: .monospaced).bold())
+            }
+            .toggleStyle(.button)
+            .help(viewModel.searchMatchCase ? "Match case: on" : "Match case: off")
+
+            // Whole word toggle
+            Toggle(isOn: $viewModel.searchWholeWord) {
+                Image(systemName: "textformat.abc.dottedunderline")
+            }
+            .toggleStyle(.button)
+            .help(viewModel.searchWholeWord ? "Whole word: on" : "Whole word: off")
         }
     }
 }

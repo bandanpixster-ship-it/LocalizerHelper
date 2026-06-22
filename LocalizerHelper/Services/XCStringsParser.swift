@@ -17,7 +17,8 @@ struct XCStringsParser: Sendable {
                     key: locKey,
                     language: normalizedLanguage,
                     value: value,
-                    sourceFile: fileURL
+                    sourceFile: fileURL,
+                    comment: stringEntry.comment
                 )
             }
         }
@@ -42,6 +43,7 @@ private struct XCStringsDocument: Decodable {
 }
 
 private struct XCStringsEntry: Decodable {
+    let comment: String?
     let localizations: [String: XCStringsLocalization]?
 }
 

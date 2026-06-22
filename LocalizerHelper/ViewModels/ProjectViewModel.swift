@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import Observation
 import os.log
@@ -11,9 +12,11 @@ final class ProjectViewModel {
     var selectedNode: FileNode?
     var catalog = LocalizationCatalog()
     var auditResults: [KeyAuditResult] = []
-    var ignoredKeys: Set<LocalizationKey> = []
     var swiftLiterals: [SwiftStringLiteral] = []
     var searchText = ""
+    var searchMatchCase = false
+    var searchWholeWord = false
+    var searchScope: SearchScope = .all
     var detailFilter: DetailFilter = .all
     var isScanning = false
     var scanError: String?
@@ -21,6 +24,7 @@ final class ProjectViewModel {
 
     private var securityScopedURL: URL?
     private var scanTask: Task<Void, Never>?
+    private var ignoreStoreCancellable: AnyCancellable?
     private let scanner = ProjectScanner()
     private let projectStore = ProjectStore()
     private let auditor = LocalizationAuditor()
@@ -28,6 +32,14 @@ final class ProjectViewModel {
     private let parsers = LocalizationParsers()
     private let fileUpdater = LocalizationFileUpdater()
     private static let logger = Logger(subsystem: "com.LocalizerHelper.ViewModel", category: "Operations")
+
+    init() {
+        ignoreStoreCancellable = GlobalIgnoreStore.shared.$entries
+            .dropFirst()
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in self?.refreshAudit() }
+            }
+    }
 
     var projectID: String? {
         rootURL.map { projectStore.projectID(for: $0) }
@@ -57,9 +69,19 @@ final class ProjectViewModel {
         var results = auditResults.filter { scopedKeys.contains($0.key) }
 
         if !searchText.isEmpty {
-            results = results.filter {
-                $0.key.key.localizedCaseInsensitiveContains(searchText)
-                    || $0.englishValue.localizedCaseInsensitiveContains(searchText)
+            results = results.filter { result in
+                switch searchScope {
+                case .all:
+                    return searchMatches(in: result.key.key)
+                        || searchMatches(in: result.englishValue)
+                        || translationSearchMatches(for: result.key)
+                case .keys:
+                    return searchMatches(in: result.key.key)
+                case .values:
+                    return searchMatches(in: result.englishValue)
+                case .translations:
+                    return translationSearchMatches(for: result.key)
+                }
             }
         }
 
@@ -72,17 +94,18 @@ final class ProjectViewModel {
             return results.filter { $0.issues.contains(where: { $0.severity == .warning }) }
         case .ignored:
             return results.filter { $0.issues.contains(where: { $0.severity == .ignored }) }
+        case .aiReady:
+            return results.filter { result in
+                catalog.entries.contains { $0.key == result.key && !($0.comment ?? "").isEmpty }
+            }
         }
     }
 
     var filteredSwiftLiterals: [SwiftStringLiteral] {
-        guard searchText.isEmpty else {
-            return swiftLiterals.filter {
-                $0.displayPattern.localizedCaseInsensitiveContains(searchText)
-                    || $0.raw.localizedCaseInsensitiveContains(searchText)
-            }
+        guard !searchText.isEmpty else { return swiftLiterals }
+        return swiftLiterals.filter {
+            searchMatches(in: $0.displayPattern) || searchMatches(in: $0.raw)
         }
-        return swiftLiterals
     }
 
     var missingSwiftLiterals: [SwiftStringLiteral] {
@@ -94,6 +117,27 @@ final class ProjectViewModel {
             guard containsUserFacingText(text) else { return false }
             return !knownTexts.contains(text)
         }
+    }
+
+    // MARK: - Search helpers
+
+    private func searchMatches(in text: String) -> Bool {
+        guard !searchText.isEmpty else { return true }
+        if searchWholeWord {
+            let escaped = NSRegularExpression.escapedPattern(for: searchText)
+            let pattern = "\\b\(escaped)\\b"
+            var options: NSRegularExpression.Options = [.useUnicodeWordBoundaries]
+            if !searchMatchCase { options.insert(.caseInsensitive) }
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return false }
+            return regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+        } else {
+            let compareOptions: String.CompareOptions = searchMatchCase ? [] : [.caseInsensitive]
+            return text.range(of: searchText, options: compareOptions) != nil
+        }
+    }
+
+    private func translationSearchMatches(for key: LocalizationKey) -> Bool {
+        catalog.entries.contains { $0.key == key && $0.language != "en" && searchMatches(in: $0.value) }
     }
 
     private func containsUserFacingText(_ text: String) -> Bool {
@@ -127,7 +171,6 @@ final class ProjectViewModel {
         unreadableFiles = []
 
         let projectID = projectStore.projectID(for: url)
-        ignoredKeys = projectStore.loadIgnoredKeys(projectID: projectID)
 
         // Save this project as the last opened
         do {
@@ -207,14 +250,51 @@ final class ProjectViewModel {
         }
     }
 
-    func toggleIgnore(key: LocalizationKey) {
-        guard let projectID else { return }
+    func saveComment(key: LocalizationKey, comment: String) {
+        // Prefer xcstrings (single file, all languages). Fall back to en.lproj .strings.
+        let targetFile = catalog.entries.first { $0.key == key && $0.sourceFile.pathExtension.lowercased() == "xcstrings" }?.sourceFile
+            ?? catalog.entry(for: key, language: "en")?.sourceFile
+        guard let fileURL = targetFile else { return }
         do {
-            ignoredKeys = try projectStore.toggleIgnored(key: key, projectID: projectID)
+            try fileUpdater.updateComment(in: fileURL, key: key.key, comment: comment)
+            refreshCatalogEntries(for: fileURL)
             refreshAudit()
         } catch {
             scanError = error.localizedDescription
         }
+    }
+
+    func affectedFiles(for key: LocalizationKey) -> [URL] {
+        Array(Set(catalog.entries.filter { $0.key == key }.map(\.sourceFile)))
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    func deleteLocalization(key: LocalizationKey) {
+        let files = affectedFiles(for: key)
+        do {
+            for fileURL in files {
+                try fileUpdater.deleteKey(from: fileURL, key: key.key)
+            }
+            for fileURL in files {
+                refreshCatalogEntries(for: fileURL)
+            }
+            refreshAudit()
+            Self.logger.info("Deleted key '\(key.key, privacy: .public)' from \(files.count, privacy: .public) files")
+        } catch {
+            Self.logger.error("Delete failed: \(error.localizedDescription, privacy: .public)")
+            scanError = error.localizedDescription
+        }
+    }
+
+    func toggleIgnore(key: LocalizationKey) {
+        let store = GlobalIgnoreStore.shared
+        if store.isIgnored(key: key.key, language: "__all__") ||
+           store.entries.contains(where: { $0.key == key.key && $0.language == nil }) {
+            store.remove(key: key.key, language: nil)
+        } else {
+            store.add(key: key.key, language: nil)
+        }
+        refreshAudit()
     }
 
     func sourceFileURL(for key: LocalizationKey, language: String) -> URL? {
@@ -277,7 +357,40 @@ final class ProjectViewModel {
     }
 
     private func refreshAudit() {
-        auditResults = auditor.audit(catalog: catalog, ignoredKeys: ignoredKeys)
+        let store = GlobalIgnoreStore.shared
+
+        // Keys with a nil-language entry are globally ignored (all languages)
+        let globallyIgnoredKeys = Set(
+            store.entries
+                .filter { $0.language == nil }
+                .compactMap { entry in catalog.entries.first { $0.key.key == entry.key }?.key }
+        )
+
+        let raw = auditor.audit(catalog: catalog, ignoredKeys: globallyIgnoredKeys)
+
+        // Post-process: convert language-specific global ignores to .ignored severity
+        auditResults = raw.map { result in
+            let remapped = result.issues.map { issue -> AuditIssue in
+                guard let lang = issue.language, issue.severity != .ignored else { return issue }
+                guard store.entries.contains(where: { $0.key == result.key.key && $0.language == lang }) else { return issue }
+                return AuditIssue(
+                    ruleID: issue.ruleID,
+                    severity: .ignored,
+                    key: issue.key,
+                    language: lang,
+                    message: "\"\(result.key.key)\" in \(lang) is globally ignored"
+                )
+            }
+            return KeyAuditResult(
+                id: result.id,
+                key: result.key,
+                englishValue: result.englishValue,
+                comment: result.comment,
+                translations: result.translations,
+                issues: remapped,
+                sourceFile: result.sourceFile
+            )
+        }
     }
 
     private func loadDetailForSelection() {
@@ -305,8 +418,34 @@ final class ProjectViewModel {
         }
     }
 
-    func translate(text: String, to language: String) async throws -> String {
-        try await TranslationService.shared.translate(text: text, to: language)
+    func generateComment(sourceLine: String, key: String) async throws -> String {
+        Self.logger.debug("Generating comment for key=\(key, privacy: .public)")
+        return try await TranslationService.shared.generateComment(sourceLine: sourceLine, key: key)
+    }
+
+    func aiTranslateBatch(key: String, sourceText: String, commentOverride: String?, languages: [String]) async throws -> [String: String] {
+        let englishEntry = catalog.entries.first { $0.key.key == key && $0.language == "en" }
+        let text = sourceText.isEmpty ? (englishEntry?.value ?? key) : sourceText
+        let comment = commentOverride ?? englishEntry?.comment
+        Self.logger.debug("AI batch translate key=\(key, privacy: .public) text=\(text, privacy: .public) comment=\(comment ?? "nil", privacy: .public) langs=\(languages.joined(separator: ","), privacy: .public)")
+        return try await TranslationService.shared.translateBatch(
+            text: text,
+            comment: comment,
+            key: key,
+            to: languages
+        )
+    }
+
+    func translate(text: String, to language: String, commentOverride: String? = nil) async throws -> String {
+        let englishEntry = catalog.entries.first { $0.key.key == text && $0.language == "en" }
+        let sourceText = englishEntry?.value ?? text
+        let comment = commentOverride ?? englishEntry?.comment
+        return try await TranslationService.shared.translate(
+            text: sourceText,
+            to: language,
+            comment: comment,
+            key: text
+        )
     }
 
     var localizationFiles: [URL] {
@@ -317,9 +456,9 @@ final class ProjectViewModel {
         return Array(urls).sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
-    func addLocalization(key: String, targetFileURL: URL, translations: [String: String]) {
+    func addLocalization(key: String, targetFileURL: URL, translations: [String: String], comment: String = "") {
         do {
-            try fileUpdater.addTranslation(to: targetFileURL, key: key, translations: translations)
+            try fileUpdater.addTranslation(to: targetFileURL, key: key, translations: translations, comment: comment)
             refreshCatalogEntries(for: targetFileURL)
             refreshAudit()
         } catch {

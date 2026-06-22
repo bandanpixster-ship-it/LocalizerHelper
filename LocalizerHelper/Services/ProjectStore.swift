@@ -1,14 +1,5 @@
 import Foundation
 
-struct IgnoredKeyRecord: Codable, Hashable {
-    let table: String
-    let key: String
-
-    var localizationKey: LocalizationKey {
-        LocalizationKey(key: key, tableName: table)
-    }
-}
-
 struct ProjectStore: Sendable {
     private let fileManager = FileManager.default
 
@@ -20,45 +11,10 @@ struct ProjectStore: Sendable {
         return name.isEmpty ? "UntitledProject" : name
     }
 
-    func loadIgnoredKeys(projectID: String) -> Set<LocalizationKey> {
-        let url = ignoredKeysURL(projectID: projectID)
-        guard let data = try? Data(contentsOf: url),
-              let records = try? JSONDecoder().decode([IgnoredKeyRecord].self, from: data) else {
-            return []
-        }
-        return Set(records.map(\.localizationKey))
-    }
-
-    func saveIgnoredKeys(_ keys: Set<LocalizationKey>, projectID: String) throws {
-        let url = ignoredKeysURL(projectID: projectID)
-        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let records = keys.map { IgnoredKeyRecord(table: $0.tableName, key: $0.key) }.sorted {
-            let tableOrder = $0.table.localizedCaseInsensitiveCompare($1.table)
-            if tableOrder != .orderedSame {
-                return tableOrder == .orderedAscending
-            }
-            return $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending
-        }
-        let data = try JSONEncoder().encode(records)
-        try data.write(to: url, options: .atomic)
-    }
-
-    func toggleIgnored(key: LocalizationKey, projectID: String) throws -> Set<LocalizationKey> {
-        var keys = loadIgnoredKeys(projectID: projectID)
-        if keys.contains(key) {
-            keys.remove(key)
-        } else {
-            keys.insert(key)
-        }
-        try saveIgnoredKeys(keys, projectID: projectID)
-        return keys
-    }
-
     func saveLastProjectURL(_ url: URL) throws {
         let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let configDir = support.appendingPathComponent("LocalizerHelper", isDirectory: true)
         try fileManager.createDirectory(at: configDir, withIntermediateDirectories: true)
-        
         let bookmark = try url.bookmarkData(
             options: .withSecurityScope,
             includingResourceValuesForKeys: nil,
@@ -73,11 +29,7 @@ struct ProjectStore: Sendable {
         let configURL = support
             .appendingPathComponent("LocalizerHelper", isDirectory: true)
             .appendingPathComponent("last-project.bookmark")
-        
-        guard let bookmark = try? Data(contentsOf: configURL) else {
-            return nil
-        }
-        
+        guard let bookmark = try? Data(contentsOf: configURL) else { return nil }
         return resolveBookmark(bookmark)
     }
 
@@ -101,22 +53,12 @@ struct ProjectStore: Sendable {
         return url
     }
 
-    private func ignoredKeysURL(projectID: String) -> URL {
-        let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return support
-            .appendingPathComponent("LocalizerHelper", isDirectory: true)
-            .appendingPathComponent("Projects", isDirectory: true)
-            .appendingPathComponent(projectID, isDirectory: true)
-            .appendingPathComponent("ignored-keys.json")
-    }
-
     private func findSingleXcodeProject(in rootURL: URL) -> URL? {
         guard let contents = try? fileManager.contentsOfDirectory(
             at: rootURL,
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         ) else { return nil }
-
         let projects = contents.filter { $0.pathExtension == "xcodeproj" }
         guard projects.count == 1 else { return nil }
         return projects[0]

@@ -73,6 +73,7 @@ struct LocalizationAuditor: Sendable {
             results.append(KeyAuditResult(
                 key: key,
                 englishValue: baseValue,
+                comment: englishEntries.first?.comment,
                 translations: translations,
                 issues: issues,
                 sourceFile: representativeSourceFile

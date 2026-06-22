@@ -11,19 +11,22 @@ struct LocalizationEntry: Identifiable, Hashable {
     let language: String
     let value: String
     let sourceFile: URL
+    let comment: String?
 
     init(
         id: UUID = UUID(),
         key: LocalizationKey,
         language: String,
         value: String,
-        sourceFile: URL
+        sourceFile: URL,
+        comment: String? = nil
     ) {
         self.id = id
         self.key = key
         self.language = language
         self.value = value
         self.sourceFile = sourceFile
+        self.comment = comment
     }
 }
 

@@ -2,6 +2,7 @@ import Foundation
 
 struct SwiftStringExtractor: Sendable {
     func extract(from source: String) -> [SwiftStringLiteral] {
+        let sourceLines = source.components(separatedBy: "\n")
         var results: [SwiftStringLiteral] = []
         var index = source.startIndex
         var lineNumber = 1
@@ -17,13 +18,24 @@ struct SwiftStringExtractor: Sendable {
 
             if char == "\"" {
                 let isMultiline = source[index...].hasPrefix("\"\"\"")
-                if let literal = isMultiline
+                if let extracted = isMultiline
                     ? extractMultilineLiteral(from: source, start: index, lineNumber: lineNumber)
                     : extractSingleLineLiteral(from: source, start: index, lineNumber: lineNumber)
                 {
-                    results.append(literal.literal)
-                    index = literal.endIndex
-                    lineNumber += literal.newlinesCrossed
+                    let sourceLine = lineNumber <= sourceLines.count
+                        ? sourceLines[lineNumber - 1].trimmingCharacters(in: .whitespaces)
+                        : ""
+                    let lit = extracted.literal
+                    results.append(SwiftStringLiteral(
+                        id: lit.id,
+                        raw: lit.raw,
+                        displayPattern: lit.displayPattern,
+                        hasInterpolation: lit.hasInterpolation,
+                        lineNumber: lit.lineNumber,
+                        sourceLine: sourceLine
+                    ))
+                    index = extracted.endIndex
+                    lineNumber += extracted.newlinesCrossed
                     continue
                 }
             }

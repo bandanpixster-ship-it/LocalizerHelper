@@ -46,6 +46,7 @@ struct KeyAuditResult: Identifiable, Hashable {
     let id: UUID
     let key: LocalizationKey
     let englishValue: String
+    let comment: String?
     let translations: [String: String]
     let issues: [AuditIssue]
     let sourceFile: URL
@@ -61,6 +62,7 @@ struct KeyAuditResult: Identifiable, Hashable {
         id: UUID = UUID(),
         key: LocalizationKey,
         englishValue: String,
+        comment: String? = nil,
         translations: [String: String],
         issues: [AuditIssue],
         sourceFile: URL
@@ -68,9 +70,37 @@ struct KeyAuditResult: Identifiable, Hashable {
         self.id = id
         self.key = key
         self.englishValue = englishValue
+        self.comment = comment
         self.translations = translations
         self.issues = issues
         self.sourceFile = sourceFile
+    }
+}
+
+enum SearchScope: String, CaseIterable, Identifiable {
+    case all = "all"
+    case keys = "keys"
+    case values = "values"
+    case translations = "translations"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .all:          return "All"
+        case .keys:         return "Keys"
+        case .values:       return "Values"
+        case .translations: return "Translations"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .all:          return "magnifyingglass"
+        case .keys:         return "key"
+        case .values:       return "textformat"
+        case .translations: return "globe"
+        }
     }
 }
 
@@ -79,6 +109,7 @@ enum DetailFilter: String, CaseIterable, Identifiable {
     case errors
     case warnings
     case ignored
+    case aiReady
 
     var id: String { rawValue }
 
@@ -88,6 +119,7 @@ enum DetailFilter: String, CaseIterable, Identifiable {
         case .errors: return "Errors"
         case .warnings: return "Warnings"
         case .ignored: return "Ignored"
+        case .aiReady: return "AI Ready"
         }
     }
 }
