@@ -313,6 +313,46 @@ final class ProjectViewModel {
         }
     }
 
+    /// Presents an NSSavePanel and creates an empty .strings or .xcstrings file.
+    /// Returns the URL of the created file, or nil if the user cancelled.
+    func createLocalizationFile() async -> URL? {
+        await withCheckedContinuation { continuation in
+            let panel = NSSavePanel()
+            panel.title = "Create Localization File"
+            panel.nameFieldStringValue = "Localizable.strings"
+            panel.canCreateDirectories = true
+            panel.message = "Create a new localization file. Place it inside an .lproj folder (e.g. en.lproj) to associate it with a language."
+
+            guard let window = NSApp.keyWindow else {
+                continuation.resume(returning: nil)
+                return
+            }
+
+            panel.beginSheetModal(for: window) { [self] result in
+                guard result == .OK, let url = panel.url else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                let content: String
+                if url.pathExtension.lowercased() == "xcstrings" {
+                    content = "{\n  \"sourceLanguage\" : \"en\",\n  \"strings\" : {},\n  \"version\" : \"1.0\"\n}\n"
+                } else {
+                    content = "/* \(url.deletingPathExtension().lastPathComponent) */\n"
+                }
+
+                do {
+                    try content.write(to: url, atomically: true, encoding: .utf8)
+                    self.refreshCatalogEntries(for: url)
+                    continuation.resume(returning: url)
+                } catch {
+                    self.scanError = "Could not create file: \(error.localizedDescription)"
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
+    }
+
     private func stopSecurityScopedAccess() {
         securityScopedURL?.stopAccessingSecurityScopedResource()
         securityScopedURL = nil

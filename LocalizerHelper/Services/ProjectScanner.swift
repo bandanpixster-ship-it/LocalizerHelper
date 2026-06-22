@@ -1,7 +1,11 @@
 import Foundation
 
 struct ProjectScanner: Sendable {
-    static let excludedDirectoryNames: Set<String> = ["Pods", "DerivedData", ".git"]
+    static let excludedDirectoryNames: Set<String> = [
+        "Pods", "DerivedData", ".git",
+        "build", ".build",       // Xcode custom build output & Swift PM
+        "Carthage",              // Carthage dependencies
+    ]
 
     func scan(at rootURL: URL) throws -> FileNode {
         let name = rootURL.lastPathComponent

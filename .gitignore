@@ -1,2 +1,22 @@
-.derivedData/
+# macOS
 .DS_Store
+*.orig
+
+# Xcode build artifacts
+build/
+DerivedData/
+.derivedData/
+*.xcarchive
+*.ipa
+
+# Xcode user-specific settings
+*.xcuserstate
+xcuserdata/
+*.xccheckout
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Instruments
+*.trace

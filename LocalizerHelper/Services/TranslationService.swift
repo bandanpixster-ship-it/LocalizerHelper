@@ -5,89 +5,96 @@ struct TranslationService {
     private static let logger = Logger(subsystem: "com.LocalizerHelper.TranslationService", category: "Translation")
     static let shared = TranslationService()
 
+    // MyMemory free tier: 5 000 chars/day, no key required.
+    // Docs: https://mymemory.translated.net/doc/spec.php
+    private static let myMemoryBase = "https://api.mymemory.translated.net/get"
+
     func translate(text: String, to language: String) async throws -> String {
-        // First attempt online translation via LibreTranslate (or any JSON‑API based service)
-        do {
-            return try await translateViaNetwork(text: text, to: language)
-        } catch {
-            Self.logger.error("Network translation failed: \(error.localizedDescription). Falling back to Python script.")
-        }
-
-        // Fallback: Execute bundled Python script
-        guard let scriptURL = Bundle.main.url(forResource: "translate_text", withExtension: "py") ?? findScriptInBundleOrWorkspace() else {
-            throw NSError(domain: "TranslationService", code: 1, userInfo: [NSLocalizedDescriptionKey: "translate_text.py script not found"])
-        }
-
-        Self.logger.debug("Executing script: \(scriptURL.path) with target: \(language)")
-
-        return try await Task.detached(priority: .userInitiated) {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-            process.arguments = [scriptURL.path, "--text", text, "--target", language]
-
-            let outPipe = Pipe()
-            let errPipe = Pipe()
-            process.standardOutput = outPipe
-            process.standardError = errPipe
-
-            try process.run()
-            process.waitUntilExit()
-
-            if process.terminationStatus != 0 {
-                let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-                let errStr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                Self.logger.error("Python script failed: \(errStr)")
-                throw NSError(domain: "TranslationService", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: errStr.isEmpty ? "Unknown python error" : errStr])
-            }
-
-            let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-            let outStr = String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return outStr
-        }.value
+        return try await translateViaMyMemory(text: text, to: language)
     }
 
-    // MARK: - Network translation using a public API
-    private func translateViaNetwork(text: String, to language: String) async throws -> String {
-        // Example endpoint – LibreTranslate public instance (replace with your preferred service)
-        let endpoint = URL(string: "https://libretranslate.de/translate")!
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    // MARK: - MyMemory
 
-        let payload: [String: Any] = [
-            "q": text,
-            "source": "en",
-            "target": language,
-            "format": "text"
+    private func translateViaMyMemory(text: String, to language: String) async throws -> String {
+        let targetCode = normalizedLanguageCode(language)
+        let langpair = "en|\(targetCode)"
+
+        var components = URLComponents(string: Self.myMemoryBase)!
+        components.queryItems = [
+            URLQueryItem(name: "q", value: text),
+            URLQueryItem(name: "langpair", value: langpair)
         ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
-        let (data, _) = try await URLSession.shared.data(for: request)
+        guard let url = components.url else {
+            throw TranslationError.invalidURL
+        }
+
+        let (data, response) = try await URLSession.shared.data(from: url)
+
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw TranslationError.httpError(http.statusCode)
+        }
 
         guard
             let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let translated = json["translatedText"] as? String
+            let responseData = json["responseData"] as? [String: Any],
+            let translated = responseData["translatedText"] as? String
         else {
-            throw NSError(domain: "TranslationService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid translation response"])
+            throw TranslationError.unexpectedResponse
         }
+
+        // MyMemory echoes back the source text when the language pair is unsupported
+        if translated.lowercased() == text.lowercased() {
+            throw TranslationError.unsupportedLanguagePair(targetCode)
+        }
+
+        // Quota exceeded returns a message in the translated field
+        if let status = json["responseStatus"] as? Int, status == 403 {
+            throw TranslationError.quotaExceeded
+        }
+
+        Self.logger.debug("Translated '\(text)' → '\(translated)' [\(targetCode)]")
         return translated
     }
 
-    private func findScriptInBundleOrWorkspace() -> URL? {
-        // Fallback search in working directory or main bundle path
-        let fm = FileManager.default
-        let bundlePath = Bundle.main.bundleURL
-        let possibleUrls = [
-            bundlePath.appendingPathComponent("translate_text.py"),
-            bundlePath.appendingPathComponent("Contents/Resources/translate_text.py"),
-            URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("LocalizerHelper/translate_text.py"),
-            URL(fileURLWithPath: "/Users/bandhansdevice/Development/LocalizerHelper/LocalizerHelper/translate_text.py")
-        ]
-        for url in possibleUrls {
-            if fm.fileExists(atPath: url.path) {
-                return url
-            }
+    // MARK: - Language code normalisation
+
+    /// Maps Apple/Xcode locale identifiers to the BCP-47 codes MyMemory expects.
+    private func normalizedLanguageCode(_ code: String) -> String {
+        let lower = code.lowercased().replacingOccurrences(of: "_", with: "-")
+        switch lower {
+        case "zh-hans", "zh-cn": return "zh-CN"
+        case "zh-hant", "zh-tw": return "zh-TW"
+        case "pt-br":            return "pt-BR"
+        case "pt-pt", "pt":      return "pt-PT"
+        default:
+            // Strip region if present (e.g. "en-US" → "en") for broad language codes
+            return String(lower.prefix(2))
         }
-        return nil
+    }
+}
+
+// MARK: - Errors
+
+enum TranslationError: LocalizedError {
+    case invalidURL
+    case httpError(Int)
+    case unexpectedResponse
+    case unsupportedLanguagePair(String)
+    case quotaExceeded
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL:
+            return "Could not construct translation request URL."
+        case .httpError(let code):
+            return "Translation service returned HTTP \(code)."
+        case .unexpectedResponse:
+            return "Translation service returned an unrecognised response."
+        case .unsupportedLanguagePair(let lang):
+            return "Language '\(lang)' is not supported by the translation service."
+        case .quotaExceeded:
+            return "Daily translation quota exceeded (5 000 chars/day on the free tier)."
+        }
     }
 }

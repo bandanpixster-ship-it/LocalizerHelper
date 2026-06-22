@@ -11,10 +11,23 @@ struct LocalizationAuditor: Sendable {
         var results: [KeyAuditResult] = []
         for (key, keyEntries) in grouped {
             let englishEntries = keyEntries.filter { $0.language == "en" }
-            guard let englishEntry = englishEntries.first else { continue }
 
-            let translations = Dictionary(uniqueKeysWithValues: keyEntries.map { ($0.language, $0.value) })
-            let nonEnglishLanguages = Set(catalog.languages.filter { $0 != "en" })
+            // Support both patterns:
+            //  • Key-value: has an en.lproj / Base.lproj file → use its value as base
+            //  • Key-as-string: no English file → the key itself IS the base string
+            let baseValue = englishEntries.first?.value ?? key.key
+
+            // Use the English entry's file for grouping when available; otherwise pick
+            // the alphabetically first language so the choice is stable across runs.
+            let representativeSourceFile = englishEntries.first?.sourceFile
+                ?? keyEntries.min(by: { $0.language < $1.language })!.sourceFile
+
+            let translations = Dictionary(keyEntries.map { ($0.language, $0.value) }, uniquingKeysWith: { _, last in last })
+
+            // Languages to audit: everything except "en".
+            // • Key-value projects: catalog.languages contains "en" → this gives non-English languages.
+            // • Key-as-string projects: catalog.languages has no "en" → this gives every language.
+            let nonBaseLanguages = Set(catalog.languages.filter { $0 != "en" })
 
             var issues: [AuditIssue] = duplicateWarnings[key] ?? []
 
@@ -27,7 +40,7 @@ struct LocalizationAuditor: Sendable {
                 ))
             }
 
-            for language in nonEnglishLanguages.sorted() {
+            for language in nonBaseLanguages.sorted() {
                 if let translation = translations[language] {
                     if translation.isEmpty {
                         issues.append(AuditIssue(
@@ -37,13 +50,13 @@ struct LocalizationAuditor: Sendable {
                             language: language,
                             message: "\"\(key.key)\" is empty in \(language)"
                         ))
-                    } else if translation == englishEntry.value, !ignoredKeys.contains(key) {
+                    } else if translation == baseValue, !ignoredKeys.contains(key) {
                         issues.append(AuditIssue(
                             ruleID: .untranslatedCopy,
                             severity: .error,
                             key: key,
                             language: language,
-                            message: "\"\(key.key)\" in \(language) matches English — missing translation"
+                            message: "\"\(key.key)\" in \(language) matches base — missing translation"
                         ))
                     }
                 } else {
@@ -59,10 +72,10 @@ struct LocalizationAuditor: Sendable {
 
             results.append(KeyAuditResult(
                 key: key,
-                englishValue: englishEntry.value,
+                englishValue: baseValue,
                 translations: translations,
                 issues: issues,
-                sourceFile: englishEntry.sourceFile
+                sourceFile: representativeSourceFile
             ))
         }
 

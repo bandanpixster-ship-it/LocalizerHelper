@@ -2,7 +2,7 @@ import Foundation
 
 struct StringsParser: Sendable {
     func parse(_ fileURL: URL) throws -> [LocalizationEntry] {
-        let content = try String(contentsOf: fileURL, encoding: .utf8)
+        let content = try Self.readStringsFile(at: fileURL)
         let tableName = tableName(from: fileURL)
         let language = languageCode(from: fileURL)
         var entriesByKey: [String: LocalizationEntry] = [:]
@@ -70,6 +70,18 @@ struct StringsParser: Sendable {
             }
         }
         return result
+    }
+
+    // .strings files can be UTF-8, UTF-16 (BOM or LE/BE), or macOS Roman.
+    // Try each in order; UTF-16 is the Xcode-generated default.
+    private static func readStringsFile(at url: URL) throws -> String {
+        let data = try Data(contentsOf: url)
+        for encoding: String.Encoding in [.utf8, .utf16, .utf16LittleEndian, .utf16BigEndian, .macOSRoman, .isoLatin1] {
+            if let string = String(data: data, encoding: encoding) {
+                return string
+            }
+        }
+        throw CocoaError(.fileReadUnknownStringEncoding)
     }
 
     private func tableName(from url: URL) -> String {

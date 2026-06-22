@@ -8,11 +8,11 @@ struct SwiftStringsDetailView: View {
     let isKeyDuplicate: (String, URL) -> Bool
     let onAddLocalization: (String, URL, [String: String]) -> Void
     let onTranslate: (String, String) async throws -> String
+    let onCreateLocalizationFile: () async -> URL?
 
     @State private var filter: Filter = .all
     @State private var sortOrder: SortOrder = .line
     @State private var selectedLiteral: SwiftStringLiteral?
-    @State private var isShowingAddSheet = false
 
     enum Filter: String, CaseIterable, Identifiable {
         case all = "All"
@@ -150,7 +150,6 @@ struct SwiftStringsDetailView: View {
                         if row.isMissing {
                             Button(action: {
                                 selectedLiteral = row.literal
-                                isShowingAddSheet = true
                             }) {
                                 Label("Add to Localization", systemImage: "plus")
                             }
@@ -182,17 +181,16 @@ struct SwiftStringsDetailView: View {
             }
             .padding(.horizontal)
             .padding(.vertical, 12)
-            .sheet(isPresented: $isShowingAddSheet, onDismiss: { selectedLiteral = nil }) {
-                if let literal = selectedLiteral {
-                    AddLocalizationSheet(
-                        literal: literal,
-                        localizationFiles: localizationFiles,
-                        languages: languages,
-                        isKeyDuplicate: isKeyDuplicate,
-                        onAdd: onAddLocalization,
-                        onTranslate: onTranslate
-                    )
-                }
+            .sheet(item: $selectedLiteral) { literal in
+                AddLocalizationSheet(
+                    literal: literal,
+                    localizationFiles: localizationFiles,
+                    languages: languages,
+                    isKeyDuplicate: isKeyDuplicate,
+                    onAdd: onAddLocalization,
+                    onTranslate: onTranslate,
+                    onCreateFile: onCreateLocalizationFile
+                )
             }
         }
     }
@@ -200,18 +198,20 @@ struct SwiftStringsDetailView: View {
 
 struct AddLocalizationSheet: View {
     let literal: SwiftStringLiteral
-    let localizationFiles: [URL]
-    let languages: [String]
     let isKeyDuplicate: (String, URL) -> Bool
     let onAdd: (String, URL, [String: String]) -> Void
     let onTranslate: (String, String) async throws -> String
+    let onCreateFile: () async -> URL?
 
     @Environment(\.dismiss) private var dismiss
 
     @State private var key: String = ""
     @State private var selectedFile: URL?
+    @State private var localFiles: [URL]
+    @State private var localLanguages: [String]
     @State private var translations: [String: String] = [:]
     @State private var isTranslating = false
+    @State private var isCreatingFile = false
     @State private var validationError: String? = nil
 
     init(
@@ -220,14 +220,14 @@ struct AddLocalizationSheet: View {
         languages: [String],
         isKeyDuplicate: @escaping (String, URL) -> Bool,
         onAdd: @escaping (String, URL, [String: String]) -> Void,
-        onTranslate: @escaping (String, String) async throws -> String
+        onTranslate: @escaping (String, String) async throws -> String,
+        onCreateFile: @escaping () async -> URL?
     ) {
         self.literal = literal
-        self.localizationFiles = localizationFiles
-        self.languages = languages
         self.isKeyDuplicate = isKeyDuplicate
         self.onAdd = onAdd
         self.onTranslate = onTranslate
+        self.onCreateFile = onCreateFile
 
         var defaultKey = literal.raw
         if defaultKey.hasPrefix("\"\"\"") && defaultKey.hasSuffix("\"\"\"") {
@@ -237,99 +237,171 @@ struct AddLocalizationSheet: View {
         }
 
         _key = State(initialValue: defaultKey)
+        _localFiles = State(initialValue: localizationFiles)
+        _localLanguages = State(initialValue: languages.isEmpty ? ["en"] : languages)
         _selectedFile = State(initialValue: localizationFiles.first)
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section(header: Text("Localization Settings").font(.headline)) {
-                    TextField("Key", text: $key)
-                        .textFieldStyle(.roundedBorder)
-                        .onChange(of: key) {
-                            validateKey()
-                        }
-
-                    if let validationError {
-                        Text(validationError)
-                            .font(.caption)
-                            .foregroundColor(.red)
-                    }
-
-                    Picker("Target File", selection: $selectedFile) {
-                        ForEach(localizationFiles, id: \.self) { file in
-                            Text(file.lastPathComponent).tag(URL?.some(file))
-                        }
-                    }
-                    .onChange(of: selectedFile) {
-                        validateKey()
-                    }
-                }
-
-                Section(header: HStack {
-                    Text("Translations").font(.headline)
-                    Spacer()
-                    if isTranslating {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Button("Auto-Translate All") {
-                            autoTranslateAll()
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(key.isEmpty)
-                    }
-                }) {
-                    ForEach(languages, id: \.self) { lang in
-                        HStack {
-                            Text(lang.uppercased())
-                                .frame(width: 40, alignment: .leading)
-                                .font(.caption.bold())
-                                .foregroundColor(.secondary)
-
-                            TextField("Translation", text: Binding(
-                                get: { translations[lang] ?? "" },
-                                set: { translations[lang] = $0 }
-                            ))
-                            .textFieldStyle(.roundedBorder)
-
-                            Button(action: {
-                                translateField(lang)
-                            }) {
-                                Image(systemName: "translate")
-                            }
-                            .buttonStyle(.borderless)
-                            .disabled(key.isEmpty || isTranslating)
-                        }
-                    }
-                }
-            }
-            .padding()
-            .formStyle(.grouped)
-            .navigationTitle("Add to Localization")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
+        VStack(spacing: 0) {
+            // Title bar
+            HStack {
+                Text("Add to Localization")
+                    .font(.headline)
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                if !localFiles.isEmpty {
                     Button("Add") {
                         if let selectedFile {
                             onAdd(key, selectedFile, translations)
                             dismiss()
                         }
                     }
+                    .keyboardShortcut(.defaultAction)
                     .disabled(key.isEmpty || selectedFile == nil || validationError != nil)
+                    .buttonStyle(.borderedProminent)
                 }
             }
-            .onAppear {
-                if translations["en"] == nil {
-                    translations["en"] = key
-                }
-                validateKey()
+            .padding()
+            .background(.regularMaterial)
+
+            Divider()
+
+            if localFiles.isEmpty {
+                noFilesView
+            } else {
+                formView
             }
         }
-        .frame(width: 480, height: 480)
+        .frame(width: 500, height: 520)
+    }
+
+    private var noFilesView: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            Image(systemName: "doc.badge.plus")
+                .font(.system(size: 48))
+                .foregroundStyle(.secondary)
+            Text("No Localization Files Found")
+                .font(.title3.weight(.semibold))
+            Text("This project has no .strings or .xcstrings files yet.\nCreate one to get started.")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button(action: createFile) {
+                if isCreatingFile {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label("Create Localizable.strings", systemImage: "plus")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isCreatingFile)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
+    }
+
+    private var formView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                // Key + file picker
+                GroupBox("Localization Settings") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        TextField("Key", text: $key)
+                            .textFieldStyle(.roundedBorder)
+                            .onChange(of: key) { validateKey() }
+
+                        if let validationError {
+                            Text(validationError)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        }
+
+                        Picker("Target File", selection: $selectedFile) {
+                            ForEach(localFiles, id: \.self) { file in
+                                Text(file.lastPathComponent).tag(URL?.some(file))
+                            }
+                        }
+                        .onChange(of: selectedFile) { validateKey() }
+                    }
+                    .padding(4)
+                }
+
+                // Translations
+                GroupBox {
+                    VStack(spacing: 10) {
+                        ForEach(localLanguages, id: \.self) { lang in
+                            HStack {
+                                Text(lang.uppercased())
+                                    .frame(width: 40, alignment: .leading)
+                                    .font(.caption.bold())
+                                    .foregroundColor(.secondary)
+                                TextField("Translation", text: Binding(
+                                    get: { translations[lang] ?? "" },
+                                    set: { translations[lang] = $0 }
+                                ))
+                                .textFieldStyle(.roundedBorder)
+                                Button { translateField(lang) } label: {
+                                    Image(systemName: "translate")
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(key.isEmpty || isTranslating)
+                            }
+                        }
+                    }
+                    .padding(4)
+                } label: {
+                    HStack {
+                        Text("Translations")
+                        Spacer()
+                        if isTranslating {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button("Auto-Translate All") { autoTranslateAll() }
+                                .buttonStyle(.borderless)
+                                .disabled(key.isEmpty)
+                        }
+                    }
+                }
+            }
+            .padding()
+        }
+        .onAppear {
+            if translations["en"] == nil { translations["en"] = key }
+            validateKey()
+        }
+    }
+
+    private func createFile() {
+        isCreatingFile = true
+        Task {
+            if let url = await onCreateFile() {
+                let lang = languageFromFileURL(url)
+                await MainActor.run {
+                    localFiles = [url]
+                    if !localLanguages.contains(lang) {
+                        localLanguages = [lang]
+                    }
+                    selectedFile = url
+                    if translations[lang] == nil { translations[lang] = key }
+                    isCreatingFile = false
+                    validateKey()
+                }
+            } else {
+                await MainActor.run { isCreatingFile = false }
+            }
+        }
+    }
+
+    private func languageFromFileURL(_ url: URL) -> String {
+        let parent = url.deletingLastPathComponent()
+        if parent.pathExtension == "lproj" {
+            return parent.deletingPathExtension().lastPathComponent
+        }
+        return "en"
     }
 
     private func validateKey() {
@@ -367,7 +439,7 @@ struct AddLocalizationSheet: View {
         isTranslating = true
         Task {
             var updated = translations
-            for lang in languages {
+            for lang in localLanguages {
                 if lang != "en" {
                     do {
                         let result = try await onTranslate(key, lang)

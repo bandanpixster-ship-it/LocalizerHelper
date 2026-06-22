@@ -133,6 +133,9 @@ struct ContentView: View {
                     },
                     onTranslate: { text, lang in
                         try await viewModel.translate(text: text, to: lang)
+                    },
+                    onCreateLocalizationFile: {
+                        await viewModel.createLocalizationFile()
                     }
                 )
             case .directory, .strings, .xcstrings:
