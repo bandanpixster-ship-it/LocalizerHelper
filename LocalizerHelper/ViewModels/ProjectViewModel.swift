@@ -109,13 +109,15 @@ final class ProjectViewModel {
     }
 
     var missingSwiftLiterals: [SwiftStringLiteral] {
-        let knownTexts = Set(catalog.entries.flatMap { [$0.key.key, $0.value] })
+        let knownKeys = Set(catalog.entries.map { $0.key.key })
 
         return filteredSwiftLiterals.filter { literal in
             let text = literal.displayPattern.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return false }
             guard containsUserFacingText(text) else { return false }
-            return !knownTexts.contains(text)
+            // Check both the display pattern and the format-specifier template
+            // so that `Hello \(name)` is recognised as present when `Hello %@` is in the catalog
+            return !knownKeys.contains(text) && !knownKeys.contains(literal.localizationTemplate)
         }
     }
 
@@ -188,6 +190,20 @@ final class ProjectViewModel {
     func selectNode(_ node: FileNode?) {
         selectedNode = node
         loadDetailForSelection()
+    }
+
+    func selectLocalizationFile(_ url: URL) {
+        guard let root = rootNode,
+              let node = findNode(url: url, in: [root]) else { return }
+        selectNode(node)
+    }
+
+    private func findNode(url: URL, in nodes: [FileNode]) -> FileNode? {
+        for node in nodes {
+            if node.url == url { return node }
+            if let found = findNode(url: url, in: node.children) { return found }
+        }
+        return nil
     }
 
     func refreshProject() {
@@ -399,23 +415,31 @@ final class ProjectViewModel {
             return
         }
 
-        if selectedNode.fileKind == .swift {
-            let fileURL = selectedNode.url
-            let extractor = swiftExtractor
-            Task {
-                do {
-                    let literals = try await Task.detached(priority: .userInitiated) {
-                        try extractor.extract(fileURL: fileURL)
-                    }.value
-                    swiftLiterals = literals
-                } catch {
-                    swiftLiterals = []
-                    unreadableFiles.append(fileURL)
-                }
-            }
-        } else {
+        let urls = swiftFileURLs(in: selectedNode)
+        guard !urls.isEmpty else {
             swiftLiterals = []
+            return
         }
+
+        let extractor = swiftExtractor
+        Task {
+            let results = await withTaskGroup(of: [SwiftStringLiteral].self) { group in
+                for url in urls {
+                    group.addTask(priority: .userInitiated) {
+                        (try? extractor.extract(fileURL: url)) ?? []
+                    }
+                }
+                var all: [SwiftStringLiteral] = []
+                for await batch in group { all.append(contentsOf: batch) }
+                return all.sorted { $0.lineNumber < $1.lineNumber }
+            }
+            swiftLiterals = results
+        }
+    }
+
+    private func swiftFileURLs(in node: FileNode) -> [URL] {
+        if !node.isDirectory { return node.fileKind == .swift ? [node.url] : [] }
+        return node.children.flatMap { swiftFileURLs(in: $0) }
     }
 
     func generateComment(sourceLine: String, key: String) async throws -> String {
@@ -456,6 +480,34 @@ final class ProjectViewModel {
         return Array(urls).sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
+    func addLanguage(code: String, to fileURL: URL) {
+        do {
+            try fileUpdater.addLanguage(code: code, to: fileURL)
+            refreshCatalogEntries(for: fileURL)
+            refreshAudit()
+        } catch {
+            scanError = error.localizedDescription
+        }
+    }
+
+    func bulkAddLocalizations(
+        items: [(key: String, translations: [String: String], comment: String)],
+        targetFileURL: URL,
+        progress: @escaping (Int) -> Void
+    ) async {
+        for (index, item) in items.enumerated() {
+            do {
+                try fileUpdater.addTranslation(to: targetFileURL, key: item.key, translations: item.translations, comment: item.comment)
+            } catch {
+                // Skip duplicates and other per-key errors silently — user can add individually
+                Self.logger.debug("bulkAdd skipped key=\(item.key, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+            await MainActor.run { progress(index + 1) }
+        }
+        refreshCatalogEntries(for: targetFileURL)
+        refreshAudit()
+    }
+
     func addLocalization(key: String, targetFileURL: URL, translations: [String: String], comment: String = "") {
         do {
             try fileUpdater.addTranslation(to: targetFileURL, key: key, translations: translations, comment: comment)
@@ -472,9 +524,9 @@ final class ProjectViewModel {
         await withCheckedContinuation { continuation in
             let panel = NSSavePanel()
             panel.title = "Create Localization File"
-            panel.nameFieldStringValue = "Localizable.strings"
+            panel.nameFieldStringValue = "Localizable.xcstrings"
             panel.canCreateDirectories = true
-            panel.message = "Create a new localization file. Place it inside an .lproj folder (e.g. en.lproj) to associate it with a language."
+            panel.message = "Create a new .xcstrings localization catalog. Place it anywhere in your project — it holds all languages in one file."
 
             guard let window = NSApp.keyWindow else {
                 continuation.resume(returning: nil)

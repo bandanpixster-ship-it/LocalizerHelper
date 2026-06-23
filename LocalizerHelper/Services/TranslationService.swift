@@ -79,17 +79,17 @@ struct TranslationService {
         let normalizedLanguages = languages.map { normalizedLanguageCode($0) }
         let langList = normalizedLanguages.joined(separator: ", ")
 
-        let systemPrompt = """
-        You are a professional iOS/macOS app localizer. \
-        Return ONLY valid JSON — no markdown, no code fences, no explanation. \
-        Preserve placeholder tokens like __PH0__ exactly as-is.
-        """
+        let hasPlaceholders = protected.contains("__PH")
+        var systemPrompt = "You are a professional iOS/macOS app localizer. Return ONLY valid JSON — no markdown, no code fences, no explanation."
+        if hasPlaceholders {
+            systemPrompt += " The string contains placeholder tokens like __PH0__. Copy them into every translation exactly as-is — do not translate or remove them."
+        }
 
         var userPrompt = "Translate this iOS app string to the following languages.\n"
         userPrompt += "Key: \(key)\n"
         if let comment { userPrompt += "Context: \(comment)\n" }
         userPrompt += "String: \(protected)\n\n"
-        userPrompt += "Return JSON with BCP-47 language codes as keys:\n"
+        userPrompt += "Return a JSON object with BCP-47 language codes as keys and translated strings as values:\n"
         userPrompt += "{\(normalizedLanguages.map { "\"\($0)\": \"...\"" }.joined(separator: ", "))}"
 
         let raw = try await batchAIRequest(system: systemPrompt, user: userPrompt)
@@ -100,16 +100,69 @@ struct TranslationService {
     }
 
     private func batchAIRequest(system: String, user: String) async throws -> String {
-        switch AISettings.shared.preferredProvider {
-        case .claude:
-            return try await claudeBatchRequest(system: system, user: user)
-        case .openAI:
-            return try await openAIBatchRequest(system: system, user: user)
-        case .gemini:
-            return try await geminiBatchRequest(system: system, user: user)
-        case .none:
-            throw TranslationError.noAIProviderConfigured
+        var lastError: Error = TranslationError.noAIProviderConfigured
+        let delays: [UInt64] = [2_000_000_000, 5_000_000_000] // 2s, 5s
+        // Loop runs delays.count + 1 times: initial attempt + one retry per delay.
+        for attempt in 0...delays.count {
+            do {
+                switch AISettings.shared.preferredProvider {
+                case .claude:  return try await claudeBatchRequest(system: system, user: user)
+                case .openAI:  return try await openAIBatchRequest(system: system, user: user)
+                case .gemini:  return try await geminiBatchRequest(system: system, user: user)
+                case .ollama, .lmStudio, .mlx:
+                    let p = AISettings.shared.preferredProvider
+                    return try await localServerRequest(
+                        baseURL: AISettings.shared.baseURL(for: p),
+                        model: AISettings.shared.localModel(for: p),
+                        system: system, user: user
+                    )
+                case .none:    throw TranslationError.noAIProviderConfigured
+                }
+            } catch TranslationError.httpError(429) where attempt < delays.count {
+                Self.logger.debug("AI rate limited (429), retrying in \(delays[attempt] / 1_000_000_000)s (attempt \(attempt + 1))")
+                try await Task.sleep(nanoseconds: delays[attempt])
+                lastError = TranslationError.httpError(429)
+            } catch {
+                throw error
+            }
         }
+        throw lastError
+    }
+
+    private func localServerRequest(baseURL: String, model: String, system: String, user: String) async throws -> String {
+        guard !model.isEmpty else { throw TranslationError.missingAPIKey("local model") }
+        let base = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(base)/v1/chat/completions") else { throw TranslationError.invalidURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = [
+            "model": model,
+            "stream": false,
+            "messages": [
+                ["role": "system", "content": system],
+                ["role": "user", "content": user]
+            ]
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        Self.logger.debug("[LocalServer] POST \(url.absoluteString, privacy: .public) model=\(model, privacy: .public)")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let rawBody = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+        if let http = response as? HTTPURLResponse {
+            Self.logger.debug("[LocalServer] status=\(http.statusCode) body=\(rawBody, privacy: .public)")
+            if !(200..<300).contains(http.statusCode) {
+                throw TranslationError.httpError(http.statusCode)
+            }
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let text = message["content"] as? String else {
+            Self.logger.error("[LocalServer] unexpected response: \(rawBody, privacy: .public)")
+            print("[LocalServer] unexpected response: \(rawBody)")
+            throw TranslationError.unexpectedResponse
+        }
+        return text
     }
 
     private func claudeBatchRequest(system: String, user: String) async throws -> String {
@@ -194,15 +247,49 @@ struct TranslationService {
     // Strips markdown fences if the AI wrapped the JSON, then decodes it.
     private func parseJSONTranslations(_ raw: String) throws -> [String: String] {
         var cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Strip markdown code fences
         if cleaned.hasPrefix("```") {
-            cleaned = cleaned.components(separatedBy: "\n").dropFirst().joined(separator: "\n")
+            let lines = cleaned.components(separatedBy: "\n")
+            cleaned = lines.dropFirst().joined(separator: "\n")
             if cleaned.hasSuffix("```") { cleaned = String(cleaned.dropLast(3)) }
             cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        guard let data = cleaned.data(using: .utf8),
-              let dict = try JSONSerialization.jsonObject(with: data) as? [String: String]
-        else { throw TranslationError.unexpectedResponse }
-        return dict
+        // Extract outermost JSON object in case model adds preamble text
+        if let start = cleaned.firstIndex(of: "{"), let end = cleaned.lastIndex(of: "}") {
+            cleaned = String(cleaned[start...end])
+        }
+
+        // Attempt parse, then retry after JSON repair if needed
+        if let result = attemptJSONParse(cleaned), !result.isEmpty { return result }
+        let repaired = repairJSON(cleaned)
+        if let result = attemptJSONParse(repaired), !result.isEmpty { return result }
+
+        Self.logger.error("[parseJSON] could not parse: \(cleaned, privacy: .public)")
+        throw TranslationError.unexpectedResponse
+    }
+
+    private func attemptJSONParse(_ text: String) -> [String: String]? {
+        guard let data = text.data(using: .utf8) else { return nil }
+        if let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String] { return dict }
+        if let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return dict.compactMapValues { $0 as? String }
+        }
+        return nil
+    }
+
+    /// Repairs common LLM JSON output issues before parsing.
+    private func repairJSON(_ json: String) -> String {
+        var result = json
+        // Fix missing opening quote on keys: `pt-BR": "val"` → `"pt-BR": "val"`
+        // Matches a key-like token right after { or , that is missing its opening quote
+        result = result.replacingOccurrences(
+            of: #"(?<=[{,]\s*)([A-Za-z][A-Za-z0-9_-]*)":"#,
+            with: "\"$1\":",
+            options: .regularExpression
+        )
+        // Remove trailing commas before closing brace
+        result = result.replacingOccurrences(of: #",\s*\}"#, with: "}", options: .regularExpression)
+        return result
     }
 
     // MARK: - AI routing
@@ -216,6 +303,14 @@ struct TranslationService {
             return try await translateViaOpenAI(text: text, comment: comment, key: key, to: language)
         case .gemini:
             return try await translateViaGemini(text: text, comment: comment, key: key, to: language)
+        case .ollama, .lmStudio, .mlx:
+            let system = "You are a professional translator. Return ONLY the translated text, no explanation."
+            let user = "Translate to \(language): \(text)"
+            return try await localServerRequest(
+                baseURL: settings.baseURL(for: settings.preferredProvider),
+                model: settings.localModel(for: settings.preferredProvider),
+                system: system, user: user
+            )
         case .none:
             throw TranslationError.noAIProviderConfigured
         }
@@ -500,11 +595,41 @@ struct TranslationService {
 
     // Tokens like %@, %d, %1$@, %2$s get corrupted by translation APIs — swap them out first.
     private func protectPlaceholders(_ text: String) -> (protected: String, placeholders: [String]) {
-        let pattern = #"%\d+\$[a-zA-Z@]+|%[-+0-9.*]*l{0,2}[a-zA-Z@]"#
         var placeholders: [String] = []
-        var result = text
-        var searchRange = result.startIndex..<result.endIndex
+        var result = ""
+        var index = text.startIndex
 
+        // First pass: protect Swift \(...) interpolations by scanning for balanced parens
+        while index < text.endIndex {
+            let c = text[index]
+            let next = text.index(after: index)
+            if c == "\\" && next < text.endIndex && text[next] == "(" {
+                var depth = 0
+                var interp = "\\"
+                var i = next
+                while i < text.endIndex {
+                    let ch = text[i]
+                    interp.append(ch)
+                    if ch == "(" { depth += 1 }
+                    else if ch == ")" {
+                        depth -= 1
+                        if depth == 0 { i = text.index(after: i); break }
+                    }
+                    i = text.index(after: i)
+                }
+                let token = "__PH\(placeholders.count)__"
+                placeholders.append(interp)
+                result.append(contentsOf: token)
+                index = i
+            } else {
+                result.append(c)
+                index = next
+            }
+        }
+
+        // Second pass: protect printf-style %d, %s, %@ placeholders
+        let pattern = #"%\d+\$[a-zA-Z@]+|%[-+0-9.*]*l{0,2}[a-zA-Z@]"#
+        var searchRange = result.startIndex..<result.endIndex
         while let matchRange = result.range(of: pattern, options: .regularExpression, range: searchRange) {
             let placeholder = String(result[matchRange])
             let token = "__PH\(placeholders.count)__"
@@ -522,7 +647,9 @@ struct TranslationService {
         for (i, placeholder) in placeholders.enumerated() {
             result = result.replacingOccurrences(of: "__PH\(i)__", with: placeholder)
         }
-        return result
+        // Strip any phantom __PHx__ tokens the model hallucinated when the source had none
+        result = result.replacingOccurrences(of: #"__PH\d+__\s*"#, with: "", options: .regularExpression)
+        return result.trimmingCharacters(in: .whitespaces)
     }
 
     // MARK: - Emoji detection
@@ -572,7 +699,7 @@ enum TranslationError: LocalizedError {
             return "Could not construct translation request URL."
         case .httpError(let code):
             if code == 429 {
-                return "Free translation rate limit hit (HTTP 429). Use AI Translate instead, or wait a minute and retry."
+                return "Rate limit reached (HTTP 429). Wait a moment and try again. Gemini free tier allows ~15 requests/min."
             }
             return "Translation service returned HTTP \(code)."
         case .unexpectedResponse:

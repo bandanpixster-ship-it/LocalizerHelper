@@ -254,6 +254,7 @@ struct LocalizationDetailView: View {
 
     private func translateField(key: String, lang: String) {
         isTranslating = true
+        translateError = nil
         let commentOverride = editComment.isEmpty ? nil : editComment
         Task {
             do {
@@ -314,8 +315,12 @@ struct LocalizationDetailView: View {
                 let results = try await onAITranslateBatch(key.key, sourceText, commentOverride, targets)
                 print("[AI Translate] success — received \(results.count) translations")
                 await MainActor.run {
-                    for (lang, value) in results where !value.isEmpty {
-                        editValues[lang] = value
+                    if results.isEmpty {
+                        translateError = "AI translation returned no results. Check your provider settings or try again."
+                    } else {
+                        for (lang, value) in results where !value.isEmpty {
+                            editValues[lang] = value
+                        }
                     }
                     isTranslating = false
                 }

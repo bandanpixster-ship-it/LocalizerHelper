@@ -58,9 +58,7 @@ struct IgnoredKeysSettingsView: View {
             titleVisibility: .visible
         ) {
             Button("Clear All", role: .destructive) {
-                for entry in store.entries {
-                    store.remove(key: entry.key, language: entry.language)
-                }
+                store.removeAll()
             }
             Button("Cancel", role: .cancel) {}
         } message: {

@@ -30,6 +30,11 @@ final class GlobalIgnoreStore: ObservableObject {
         save()
     }
 
+    func removeAll() {
+        entries.removeAll()
+        save()
+    }
+
     private func load() {
         guard let data = try? Data(contentsOf: fileURL),
               let decoded = try? JSONDecoder().decode([GlobalIgnoreEntry].self, from: data)

@@ -2,19 +2,25 @@ import Foundation
 import Security
 
 enum AIProvider: String, CaseIterable, Identifiable, Codable {
-    case claude = "claude"
-    case openAI = "openai"
-    case gemini = "gemini"
-    case none = "none"
+    case claude   = "claude"
+    case openAI   = "openai"
+    case gemini   = "gemini"
+    case ollama   = "ollama"
+    case lmStudio = "lmstudio"
+    case mlx      = "mlx"
+    case none     = "none"
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .claude:  return "Claude (Anthropic)"
-        case .openAI:  return "OpenAI (ChatGPT)"
-        case .gemini:  return "Gemini (Google)"
-        case .none:    return "None — use free services"
+        case .claude:   return "Claude (Anthropic)"
+        case .openAI:   return "OpenAI (ChatGPT)"
+        case .gemini:   return "Gemini (Google)"
+        case .ollama:   return "Ollama (Local — Free)"
+        case .lmStudio: return "LM Studio (Local — Free)"
+        case .mlx:      return "MLX (Apple Silicon — Free)"
+        case .none:     return "None — use free services"
         }
     }
 
@@ -23,7 +29,30 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable {
         case .claude:  return "Claude API Key"
         case .openAI:  return "OpenAI API Key"
         case .gemini:  return "Gemini API Key"
-        case .none:    return ""
+        default:       return ""
+        }
+    }
+
+    var requiresAPIKey: Bool {
+        switch self {
+        case .claude, .openAI, .gemini: return true
+        default:                        return false
+        }
+    }
+
+    var isLocalServer: Bool {
+        switch self {
+        case .ollama, .lmStudio, .mlx: return true
+        default:                       return false
+        }
+    }
+
+    var defaultBaseURL: String {
+        switch self {
+        case .ollama:   return "http://localhost:11434"
+        case .lmStudio: return "http://localhost:1234"
+        case .mlx:      return "http://localhost:8080"
+        default:        return ""
         }
     }
 }
@@ -48,7 +77,7 @@ final class AISettings {
         preferredProvider = AIProvider(rawValue: raw) ?? .none
     }
 
-    // MARK: - API keys (Keychain)
+    // MARK: - Cloud API keys (Keychain)
 
     var claudeKey: String? {
         get { keychainRead(Keys.claudeKey) }
@@ -65,10 +94,36 @@ final class AISettings {
         set { keychainWrite(Keys.geminiKey, value: newValue) }
     }
 
+    // MARK: - Local server settings (UserDefaults — not sensitive)
+
+    func baseURL(for provider: AIProvider) -> String {
+        let stored = UserDefaults.standard.string(forKey: "ai.\(provider.rawValue).baseURL")
+        return stored ?? provider.defaultBaseURL
+    }
+
+    func setBaseURL(_ url: String, for provider: AIProvider) {
+        UserDefaults.standard.set(url, forKey: "ai.\(provider.rawValue).baseURL")
+    }
+
+    func localModel(for provider: AIProvider) -> String {
+        UserDefaults.standard.string(forKey: "ai.\(provider.rawValue).model") ?? ""
+    }
+
+    func setLocalModel(_ model: String, for provider: AIProvider) {
+        UserDefaults.standard.set(model, forKey: "ai.\(provider.rawValue).model")
+    }
+
+    // MARK: - State
+
     var hasAnyKey: Bool {
-        (claudeKey?.isEmpty == false) ||
-        (openAIKey?.isEmpty == false) ||
-        (geminiKey?.isEmpty == false)
+        switch preferredProvider {
+        case .ollama, .lmStudio, .mlx:
+            return !localModel(for: preferredProvider).isEmpty
+        case .claude: return claudeKey?.isEmpty == false
+        case .openAI: return openAIKey?.isEmpty == false
+        case .gemini: return geminiKey?.isEmpty == false
+        case .none:   return false
+        }
     }
 
     func key(for provider: AIProvider) -> String? {
@@ -76,7 +131,7 @@ final class AISettings {
         case .claude:  return claudeKey
         case .openAI:  return openAIKey
         case .gemini:  return geminiKey
-        case .none:    return nil
+        default:       return nil
         }
     }
 
@@ -85,7 +140,38 @@ final class AISettings {
         case .claude:  claudeKey = value
         case .openAI:  openAIKey = value
         case .gemini:  geminiKey = value
-        case .none:    break
+        default:       break
+        }
+    }
+
+    // MARK: - Model fetching
+
+    /// Ollama uses its own `/api/tags` format.
+    func fetchOllamaModels(baseURL: String) async throws -> [String] {
+        let base = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(base)/api/tags") else { throw URLError(.badURL) }
+        let (data, _) = try await URLSession.shared.data(from: url)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = json["models"] as? [[String: Any]] else { return [] }
+        return models.compactMap { $0["name"] as? String }.sorted()
+    }
+
+    /// LM Studio and MLX use the OpenAI-compatible `/v1/models` format.
+    func fetchOpenAICompatibleModels(baseURL: String) async throws -> [String] {
+        let base = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(base)/v1/models") else { throw URLError(.badURL) }
+        let (data, _) = try await URLSession.shared.data(from: url)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = json["data"] as? [[String: Any]] else { return [] }
+        return models.compactMap { $0["id"] as? String }.sorted()
+    }
+
+    func fetchModels(for provider: AIProvider) async throws -> [String] {
+        let url = baseURL(for: provider)
+        switch provider {
+        case .ollama:             return try await fetchOllamaModels(baseURL: url)
+        case .lmStudio, .mlx:    return try await fetchOpenAICompatibleModels(baseURL: url)
+        default:                  return []
         }
     }
 

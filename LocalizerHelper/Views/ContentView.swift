@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @State private var viewModel = ProjectViewModel()
     @State private var hasAutoOpened = false
+    @State private var showAddLanguage = false
 
     var body: some View {
         NavigationSplitView {
@@ -13,6 +14,13 @@ struct ContentView: View {
         .navigationSplitViewStyle(.balanced)
         .toolbar { toolbarContent }
         .searchable(text: $viewModel.searchText, prompt: "Search keys or literals")
+        .sheet(isPresented: $showAddLanguage) {
+            AddLanguageView(
+                localizationFiles: viewModel.localizationFiles,
+                existingLanguages: viewModel.catalog.languages,
+                onAdd: { code, file in viewModel.addLanguage(code: code, to: file) }
+            )
+        }
         .alert("Scan Error", isPresented: .init(
             get: { viewModel.scanError != nil },
             set: { if !$0 { viewModel.scanError = nil } }
@@ -123,45 +131,17 @@ struct ContentView: View {
         if let selected = viewModel.selectedNode {
             switch selected.fileKind {
             case .swift:
-                SwiftStringsDetailView(
-                    literals: viewModel.filteredSwiftLiterals,
-                    pendingLiterals: viewModel.missingSwiftLiterals,
-                    localizationFiles: viewModel.localizationFiles,
-                    languages: viewModel.catalog.languages,
-                    isKeyDuplicate: { key, fileURL in
-                        viewModel.catalog.entries.contains { $0.sourceFile == fileURL && $0.key.key == key }
-                    },
-                    onAddLocalization: { key, fileURL, translations, comment in
-                        viewModel.addLocalization(key: key, targetFileURL: fileURL, translations: translations, comment: comment)
-                    },
-                    onTranslate: { text, lang in
-                        try await viewModel.translate(text: text, to: lang)
-                    },
-                    onAITranslateBatch: aiTranslateBatchHandler,
-                    onGenerateComment: generateCommentHandler,
-                    onCreateLocalizationFile: {
-                        await viewModel.createLocalizationFile()
-                    }
-                )
-            case .directory, .strings, .xcstrings:
-                if viewModel.filteredAuditResults.isEmpty && selected.fileKind == .directory {
-                    EmptySelectionView(node: selected)
+                swiftStringsDetailView
+            case .directory:
+                if !viewModel.swiftLiterals.isEmpty {
+                    swiftStringsDetailView
+                } else if !viewModel.filteredAuditResults.isEmpty {
+                    localizationDetailView
                 } else {
-                    LocalizationDetailView(
-                        results: viewModel.filteredAuditResults,
-                        languages: viewModel.catalog.languages,
-                        onToggleIgnore: { viewModel.toggleIgnore(key: $0) },
-                        sourceFileForLanguage: { viewModel.sourceFileURL(for: $0, language: $1) },
-                        onSaveTranslations: { viewModel.saveTranslations(key: $0, values: $1) },
-                        onSaveComment: { viewModel.saveComment(key: $0, comment: $1) },
-                        onTranslate: { text, lang, commentOverride in
-                            try await viewModel.translate(text: text, to: lang, commentOverride: commentOverride)
-                        },
-                        onAITranslateBatch: aiTranslateBatchHandler,
-                        onAffectedFiles: { viewModel.affectedFiles(for: $0) },
-                        onDeleteKey: { viewModel.deleteLocalization(key: $0) }
-                    )
+                    EmptySelectionView(node: selected)
                 }
+            case .strings, .xcstrings:
+                localizationDetailView
             case .other:
                 EmptySelectionView(node: selected)
             }
@@ -184,9 +164,81 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
+    private var swiftStringsDetailView: some View {
+        SwiftStringsDetailView(
+            literals: viewModel.filteredSwiftLiterals,
+            pendingLiterals: viewModel.missingSwiftLiterals,
+            localizationFiles: viewModel.localizationFiles,
+            languages: viewModel.catalog.languages,
+            isKeyDuplicate: { key, fileURL in
+                viewModel.catalog.entries.contains { $0.sourceFile == fileURL && $0.key.key == key }
+            },
+            onAddLocalization: { key, fileURL, translations, comment in
+                viewModel.addLocalization(key: key, targetFileURL: fileURL, translations: translations, comment: comment)
+            },
+            onBulkAdd: { items, file, progress in
+                await viewModel.bulkAddLocalizations(items: items, targetFileURL: file, progress: progress)
+            },
+            onTranslate: { text, lang in
+                try await viewModel.translate(text: text, to: lang)
+            },
+            onAITranslateBatch: aiTranslateBatchHandler,
+            onGenerateComment: generateCommentHandler,
+            onCreateLocalizationFile: {
+                await viewModel.createLocalizationFile()
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var localizationDetailView: some View {
+        LocalizationDetailView(
+            results: viewModel.filteredAuditResults,
+            languages: viewModel.catalog.languages,
+            onToggleIgnore: { viewModel.toggleIgnore(key: $0) },
+            sourceFileForLanguage: { viewModel.sourceFileURL(for: $0, language: $1) },
+            onSaveTranslations: { viewModel.saveTranslations(key: $0, values: $1) },
+            onSaveComment: { viewModel.saveComment(key: $0, comment: $1) },
+            onTranslate: { text, lang, commentOverride in
+                try await viewModel.translate(text: text, to: lang, commentOverride: commentOverride)
+            },
+            onAITranslateBatch: aiTranslateBatchHandler,
+            onAffectedFiles: { viewModel.affectedFiles(for: $0) },
+            onDeleteKey: { viewModel.deleteLocalization(key: $0) }
+        )
+    }
+
     private var showsLocalizationDetail: Bool {
         guard let selected = viewModel.selectedNode else { return false }
         return selected.fileKind == .directory || selected.fileKind == .strings || selected.fileKind == .xcstrings
+    }
+
+    @ViewBuilder
+    private var openLocalizableButton: some View {
+        let files = viewModel.localizationFiles
+        if files.count == 1 {
+            Button {
+                viewModel.selectLocalizationFile(files[0])
+            } label: {
+                Label("Open Localizable", systemImage: "doc.text.magnifyingglass")
+            }
+            .disabled(files.isEmpty)
+            .help("Select \(files[0].lastPathComponent) in the sidebar")
+        } else if files.count > 1 {
+            Menu {
+                ForEach(files, id: \.self) { file in
+                    Button(file.lastPathComponent) {
+                        viewModel.selectLocalizationFile(file)
+                    }
+                }
+            } label: {
+                Label("Open Localizable", systemImage: "doc.text.magnifyingglass")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Jump to a localization file in the sidebar")
+        }
     }
 
     @ToolbarContentBuilder
@@ -199,6 +251,13 @@ struct ContentView: View {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
             .disabled(viewModel.rootURL == nil || viewModel.isScanning)
+            Button(action: { showAddLanguage = true }) {
+                Label("Add Language", systemImage: "plus.bubble")
+            }
+            .disabled(viewModel.localizationFiles.isEmpty)
+            .help("Add a new language to your localization files")
+
+            openLocalizableButton
         }
 
         ToolbarItemGroup(placement: .automatic) {

@@ -63,6 +63,49 @@ struct LocalizationFileUpdater {
         logger.info("Successfully updated translation for key=\(key, privacy: .public) in language=\(language, privacy: .public)")
     }
 
+    func addLanguage(code: String, to fileURL: URL) throws {
+        switch fileURL.pathExtension.lowercased() {
+        case "xcstrings":
+            try addLanguageToXCStrings(code: code, fileURL: fileURL)
+        case "strings":
+            try addLanguageToStringsFolder(code: code, templateFileURL: fileURL)
+        default:
+            throw UpdateError.unsupportedFileType
+        }
+    }
+
+    private func addLanguageToXCStrings(code: String, fileURL: URL) throws {
+        let data = try Data(contentsOf: fileURL)
+        guard var json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw UpdateError.invalidFileContents(reason: "Failed to parse .xcstrings JSON.")
+        }
+        var strings = json["strings"] as? [String: Any] ?? [:]
+        for key in strings.keys {
+            guard var entry = strings[key] as? [String: Any] else { continue }
+            var localizations = entry["localizations"] as? [String: Any] ?? [:]
+            guard localizations[code] == nil else { continue }
+            localizations[code] = ["stringUnit": ["state": "new", "value": ""]]
+            entry["localizations"] = localizations
+            strings[key] = entry
+        }
+        json["strings"] = strings
+        let out = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        try out.write(to: fileURL, options: .atomic)
+    }
+
+    private func addLanguageToStringsFolder(code: String, templateFileURL: URL) throws {
+        let lprojParent = templateFileURL.deletingLastPathComponent().deletingLastPathComponent()
+        let newLproj = lprojParent.appendingPathComponent("\(code).lproj")
+        let newFile = newLproj.appendingPathComponent(templateFileURL.lastPathComponent)
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: newLproj.path) {
+            try fm.createDirectory(at: newLproj, withIntermediateDirectories: true)
+        }
+        guard !fm.fileExists(atPath: newFile.path) else { return }
+        let tableName = templateFileURL.deletingPathExtension().lastPathComponent
+        try "/* \(tableName) */\n".write(to: newFile, atomically: true, encoding: .utf8)
+    }
+
     func addTranslation(to fileURL: URL, key: String, translations: [String: String], comment: String = "") throws {
         logger.debug("Attempting to add translation: key=\(key, privacy: .public) to file=\(fileURL.path, privacy: .public)")
 

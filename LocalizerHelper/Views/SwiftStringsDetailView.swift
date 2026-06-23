@@ -7,6 +7,7 @@ struct SwiftStringsDetailView: View {
     let languages: [String]
     let isKeyDuplicate: (String, URL) -> Bool
     let onAddLocalization: (String, URL, [String: String], String) -> Void
+    let onBulkAdd: (_ items: [(key: String, translations: [String: String], comment: String)], _ file: URL, _ progress: @escaping (Int) -> Void) async -> Void
     let onTranslate: (String, String) async throws -> String
     let onAITranslateBatch: ((String, String, String?, [String]) async throws -> [String: String])?
     let onGenerateComment: ((String, String) async throws -> String)?
@@ -15,6 +16,7 @@ struct SwiftStringsDetailView: View {
     @State private var filter: Filter = .all
     @State private var sortOrder: SortOrder = .line
     @State private var selectedLiteral: SwiftStringLiteral?
+    @State private var showBulkAdd = false
 
     enum Filter: String, CaseIterable, Identifiable {
         case all = "All"
@@ -178,6 +180,16 @@ struct SwiftStringsDetailView: View {
                     }
 
                     Spacer()
+
+                    if !pendingLiterals.isEmpty && !localizationFiles.isEmpty {
+                        Button {
+                            showBulkAdd = true
+                        } label: {
+                            Label("Add All Missing (\(pendingLiterals.count))", systemImage: "square.and.arrow.down.on.square")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
                 }
                 .padding(.horizontal, 4)
             }
@@ -194,6 +206,16 @@ struct SwiftStringsDetailView: View {
                     onAITranslateBatch: onAITranslateBatch,
                     onGenerateComment: onGenerateComment,
                     onCreateFile: onCreateLocalizationFile
+                )
+            }
+            .sheet(isPresented: $showBulkAdd) {
+                BulkAddSheet(
+                    literals: pendingLiterals,
+                    localizationFiles: localizationFiles,
+                    languages: languages,
+                    onBulkAdd: onBulkAdd,
+                    onTranslate: onTranslate,
+                    onAITranslateBatch: onAITranslateBatch
                 )
             }
         }
@@ -242,14 +264,7 @@ struct AddLocalizationSheet: View {
         self.onGenerateComment = onGenerateComment
         self.onCreateFile = onCreateFile
 
-        var defaultKey = literal.raw
-        if defaultKey.hasPrefix("\"\"\"") && defaultKey.hasSuffix("\"\"\"") {
-            defaultKey = String(defaultKey.dropFirst(3).dropLast(3))
-        } else if defaultKey.hasPrefix("\"") && defaultKey.hasSuffix("\"") {
-            defaultKey = String(defaultKey.dropFirst().dropLast())
-        }
-
-        _key = State(initialValue: defaultKey)
+        _key = State(initialValue: literal.localizationTemplate)
         _localFiles = State(initialValue: localizationFiles)
         _localLanguages = State(initialValue: languages.isEmpty ? ["en"] : languages)
         _selectedFile = State(initialValue: localizationFiles.first)
@@ -473,12 +488,17 @@ struct AddLocalizationSheet: View {
         let sourceText = translations["en"] ?? key
         let commentOverride = comment.isEmpty ? nil : comment
         isTranslating = true
+        translateError = nil
         Task {
             do {
                 let results = try await onAITranslateBatch(key, sourceText, commentOverride, targets)
                 await MainActor.run {
-                    for (lang, value) in results where !value.isEmpty {
-                        translations[lang] = value
+                    if results.isEmpty {
+                        translateError = "AI translation returned no results. Check your provider settings or try again."
+                    } else {
+                        for (lang, value) in results where !value.isEmpty {
+                            translations[lang] = value
+                        }
                     }
                     isTranslating = false
                 }
@@ -537,6 +557,7 @@ struct AddLocalizationSheet: View {
 
     private func translateField(_ lang: String) {
         isTranslating = true
+        translateError = nil
         Task {
             do {
                 let result = try await onTranslate(key, lang)
@@ -547,6 +568,7 @@ struct AddLocalizationSheet: View {
             } catch {
                 await MainActor.run {
                     isTranslating = false
+                    translateError = error.localizedDescription
                 }
             }
         }

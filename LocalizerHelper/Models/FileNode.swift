@@ -1,7 +1,7 @@
 import Foundation
 
 struct FileNode: Identifiable, Hashable {
-    let id: UUID
+    var id: URL { url }
     let name: String
     let url: URL
     let isDirectory: Bool
@@ -9,14 +9,12 @@ struct FileNode: Identifiable, Hashable {
     var fileKind: FileKind
 
     init(
-        id: UUID = UUID(),
         name: String,
         url: URL,
         isDirectory: Bool,
         children: [FileNode] = [],
         fileKind: FileKind
     ) {
-        self.id = id
         self.name = name
         self.url = url
         self.isDirectory = isDirectory
@@ -25,10 +23,10 @@ struct FileNode: Identifiable, Hashable {
     }
 
     func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
+        hasher.combine(url)
     }
 
     static func == (lhs: FileNode, rhs: FileNode) -> Bool {
-        lhs.id == rhs.id
+        lhs.url == rhs.url
     }
 }
