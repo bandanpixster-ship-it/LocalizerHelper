@@ -1,3 +1,10 @@
+//
+//  AISettings.swift
+//  LocalizerHelper
+//
+//  Created by Bandan's MacBook Pro on 22/06/26.
+//
+
 import Foundation
 import Security
 

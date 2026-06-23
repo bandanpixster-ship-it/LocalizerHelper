@@ -1,3 +1,11 @@
+//
+//  AddLanguageView.swift
+//  LocalizerHelper
+//
+//  Created by Bandan's MacBook Pro on 23/06/26.
+//
+
+
 import SwiftUI
 
 struct AddLanguageView: View {
@@ -9,6 +17,8 @@ struct AddLanguageView: View {
     @State private var search = ""
     @State private var selectedCode: String? = nil
     @State private var selectedFile: URL?
+    @State private var showAddAlert = false
+    @State private var alertMessage = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,12 +31,28 @@ struct AddLanguageView: View {
                     .keyboardShortcut(.cancelAction)
                 Button("Add") {
                     guard let code = selectedCode, let file = selectedFile else { return }
-                    onAdd(code, file)
-                    dismiss()
+                    // Determine appropriate message based on file type
+                    if file.pathExtension.lowercased() == "strings" {
+                        alertMessage = "The language '\(code)' will be added by creating a new .lproj folder and an empty .strings file. Xcode may need to be refreshed to show the folder. Proceed?"
+                    } else {
+                        alertMessage = "The language '\(code)' will be added to the String Catalog (\(file.lastPathComponent)). This updates the catalog file in place. Proceed?"
+                    }
+                    showAddAlert = true
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
                 .disabled(selectedCode == nil || selectedFile == nil)
+                .alert(isPresented: $showAddAlert) {
+                    Alert(
+                        title: Text("Add Language"),
+                        message: Text(alertMessage),
+                        primaryButton: .default(Text("Proceed")) {
+                            onAdd(selectedCode!, selectedFile!)
+                            dismiss()
+                        },
+                        secondaryButton: .cancel()
+                    )
+                }
             }
             .padding()
 
@@ -97,27 +123,4 @@ struct AddLanguageView: View {
             $0.displayName.lowercased().contains(q) || $0.code.lowercased().contains(q)
         }
     }
-}
-
-struct LanguageOption: Identifiable {
-    let code: String
-    let displayName: String
-    var id: String { code }
-
-    static let all: [LanguageOption] = {
-        let currentLocale = Locale(identifier: "en")
-        let codes = Set(
-            Locale.availableIdentifiers.compactMap {
-                Locale(identifier: $0).language.languageCode?.identifier
-            }
-        )
-        return codes
-            .map { code in
-                let name = currentLocale.localizedString(forLanguageCode: code)
-                    ?? Locale(identifier: code).localizedString(forLanguageCode: code)
-                    ?? code
-                return LanguageOption(code: code, displayName: name)
-            }
-            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
-    }()
 }

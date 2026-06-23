@@ -1,3 +1,11 @@
+//
+//  AuditBadgeView.swift
+//  LocalizerHelper
+//
+//  Created by Bandan's MacBook Pro on 17/06/26.
+//
+
+
 import SwiftUI
 
 struct AuditBadgeView: View {

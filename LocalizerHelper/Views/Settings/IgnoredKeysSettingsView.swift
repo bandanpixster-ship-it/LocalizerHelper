@@ -1,3 +1,11 @@
+//
+//  IgnoredKeysSettingsView.swift
+//  LocalizerHelper
+//
+//  Created by Bandan's MacBook Pro on 22/06/26.
+//
+
+
 import SwiftUI
 
 struct IgnoredKeysSettingsView: View {

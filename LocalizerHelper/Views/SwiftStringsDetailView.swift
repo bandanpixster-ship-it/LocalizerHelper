@@ -1,3 +1,11 @@
+//
+//  SwiftStringsDetailView.swift
+//  LocalizerHelper
+//
+//  Created by Bandan's MacBook Pro on 17/06/26.
+//
+
+
 import SwiftUI
 
 struct SwiftStringsDetailView: View {
@@ -13,18 +21,20 @@ struct SwiftStringsDetailView: View {
     let onGenerateComment: ((String, String) async throws -> String)?
     let onCreateLocalizationFile: () async -> URL?
 
-    @State private var filter: Filter = .all
+    @State private var showConfirmAlert = false
+    @State private var pendingConfirmAction: (() -> Void)? = nil
+    @State private var confirmAlertMessage = ""
     @State private var sortOrder: SortOrder = .line
     @State private var selectedLiteral: SwiftStringLiteral?
     @State private var showBulkAdd = false
 
-    enum Filter: String, CaseIterable, Identifiable {
-        case all = "All"
-        case missing = "Missing"
-        case present = "Present"
-
-        var id: String { rawValue }
-    }
+enum Filter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case missing = "Missing"
+    case present = "Present"
+    var id: String { rawValue }
+}
+@State private var filter: Filter = .all
 
     enum SortOrder: String, CaseIterable, Identifiable {
         case line = "Line"
@@ -263,12 +273,15 @@ struct AddLocalizationSheet: View {
         self.onAITranslateBatch = onAITranslateBatch
         self.onGenerateComment = onGenerateComment
         self.onCreateFile = onCreateFile
-
         _key = State(initialValue: literal.localizationTemplate)
         _localFiles = State(initialValue: localizationFiles)
         _localLanguages = State(initialValue: languages.isEmpty ? ["en"] : languages)
         _selectedFile = State(initialValue: localizationFiles.first)
     }
+
+    @State private var showConfirmAlert = false
+    @State private var pendingConfirmAction: (() -> Void)? = nil
+    @State private var confirmAlertMessage = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -303,6 +316,20 @@ struct AddLocalizationSheet: View {
             }
         }
         .frame(width: 500, height: 520)
+        .onAppear {
+            if translations["en"] == nil { translations["en"] = key }
+            validateKey()
+        }
+        .alert(isPresented: $showConfirmAlert) {
+            Alert(
+                title: Text(confirmAlertMessage),
+                primaryButton: .default(Text("Proceed")) {
+                    pendingConfirmAction?()
+                    pendingConfirmAction = nil
+                },
+                secondaryButton: .cancel()
+            )
+        }
     }
 
     private var noFilesView: some View {
@@ -382,7 +409,9 @@ struct AddLocalizationSheet: View {
                                 ProgressView().controlSize(.small)
                             } else {
                                 Button {
-                                    generateComment(onGenerateComment)
+                                    confirmAlertMessage = "Generating a comment with AI may produce inaccurate or hallucinated text. Review the result before saving. Proceed?"
+                                    pendingConfirmAction = { generateComment(onGenerateComment) }
+                                    showConfirmAlert = true
                                 } label: {
                                     Label("Generate", systemImage: "sparkles")
                                 }
@@ -425,12 +454,18 @@ struct AddLocalizationSheet: View {
                             ProgressView().controlSize(.small)
                         } else {
                             HStack(spacing: 12) {
-                                Button("Auto-Translate All") { autoTranslateAll() }
-                                    .buttonStyle(.borderless)
-                                    .disabled(key.isEmpty)
+                                Button("Auto-Translate All") {
+                                    confirmAlertMessage = "Auto‑translate will call the selected translation provider for every missing language. This may incur network usage and cost. Proceed?"
+                                    pendingConfirmAction = { self.autoTranslateAll() }
+                                    showConfirmAlert = true
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(key.isEmpty)
                                 if onAITranslateBatch != nil {
                                     Button {
-                                        aiTranslateAll()
+                                        confirmAlertMessage = "AI batch translate will send the source text and any comment to the selected local/remote model. Costs and hallucination risk apply. Proceed?"
+                                        pendingConfirmAction = { self.aiTranslateAll() }
+                                        showConfirmAlert = true
                                     } label: {
                                         Label("AI Translate", systemImage: "sparkles")
                                     }

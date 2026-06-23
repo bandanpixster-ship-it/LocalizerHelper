@@ -1,3 +1,11 @@
+//
+//  ContentView.swift
+//  LocalizerHelper
+//
+//  Created by Bandan's MacBook Pro on 17/06/26.
+//
+
+
 import SwiftUI
 
 struct ContentView: View {
@@ -61,6 +69,7 @@ struct ContentView: View {
                 } description: {
                     Text("Open a project folder to browse files and audit localizations.")
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .navigationSplitViewColumnWidth(min: 220, ideal: 280)

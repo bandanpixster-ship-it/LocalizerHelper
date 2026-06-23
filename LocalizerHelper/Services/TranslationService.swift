@@ -1,3 +1,11 @@
+//
+//  TranslationService.swift
+//  LocalizerHelper
+//
+//  Created by Bandan's MacBook Pro on 19/06/26.
+//
+
+
 import Foundation
 import os.log
 

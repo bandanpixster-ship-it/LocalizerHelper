@@ -1,3 +1,11 @@
+//
+//  BulkAddSheet.swift
+//  LocalizerHelper
+//
+//  Created by Bandan's MacBook Pro on 23/06/26.
+//
+
+
 import SwiftUI
 
 struct BulkAddSheet: View {

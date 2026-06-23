@@ -1,3 +1,11 @@
+//
+//  LocalizationDetailView.swift
+//  LocalizerHelper
+//
+//  Created by Bandan's MacBook Pro on 17/06/26.
+//
+
+
 import SwiftUI
 
 struct LocalizationDetailView: View {
@@ -40,6 +48,7 @@ struct LocalizationDetailView: View {
     var body: some View {
         if results.isEmpty {
             ContentUnavailableView("No Localization Keys", systemImage: "globe", description: Text("No .strings or .xcstrings entries found in this selection."))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             List {
                 ForEach(groupedByFile, id: \.file) { group in
