@@ -18,6 +18,7 @@ final class ProjectViewModel {
     var rootURL: URL?
     var rootNode: FileNode?
     var selectedNode: FileNode?
+    private var selectionHistory: [FileNode] = []
     var catalog = LocalizationCatalog()
     var auditResults: [KeyAuditResult] = []
     var swiftLiterals: [SwiftStringLiteral] = []
@@ -29,6 +30,8 @@ final class ProjectViewModel {
     var isScanning = false
     var scanError: String?
     var unreadableFiles: [URL] = []
+    var pendingProjectURL: URL?
+    var showOpenProjectChoice = false
 
     private var securityScopedURL: URL?
     private var scanTask: Task<Void, Never>?
@@ -165,7 +168,38 @@ final class ProjectViewModel {
         panel.prompt = "Open"
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        openProject(at: url)
+
+        if rootURL != nil {
+            pendingProjectURL = url
+            showOpenProjectChoice = true
+        } else {
+            openProject(at: url)
+        }
+    }
+
+    func openProjectInNewWindow(_ handler: (URL) -> Void) {
+        let panel = NSOpenPanel()
+        panel.title = "Open Project Folder"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.prompt = "Open"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        handler(url)
+    }
+
+    func openPendingProjectInCurrentWindow() {
+        guard let pendingProjectURL else { return }
+        showOpenProjectChoice = false
+        self.pendingProjectURL = nil
+        openProject(at: pendingProjectURL)
+    }
+
+    func cancelPendingProjectOpen() {
+        showOpenProjectChoice = false
+        pendingProjectURL = nil
     }
 
     func openProject(at url: URL) {
@@ -176,6 +210,7 @@ final class ProjectViewModel {
         scanTask?.cancel()
         rootURL = url
         selectedNode = nil
+        selectionHistory = []
         swiftLiterals = []
         scanError = nil
         unreadableFiles = []
@@ -196,7 +231,20 @@ final class ProjectViewModel {
     }
 
     func selectNode(_ node: FileNode?) {
+        if let selectedNode, selectedNode != node {
+            selectionHistory.append(selectedNode)
+        }
         selectedNode = node
+        loadDetailForSelection()
+    }
+
+    var canGoBackInSelection: Bool {
+        !selectionHistory.isEmpty
+    }
+
+    func goBackToPreviousSelection() {
+        guard let previousNode = selectionHistory.popLast() else { return }
+        selectedNode = previousNode
         loadDetailForSelection()
     }
 

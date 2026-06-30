@@ -4,31 +4,43 @@
 
 ## Implementation progress
 
-> **Last updated:** 2026-06-17 — Phases 0–5 fully implemented, including edit/save functionality.
+> **Last updated:** 2026-06-30 — Phases 0–7 fully implemented, including AI translation, menu commands, and settings.
 
 | Phase | Status | Notes |
 |-------|--------|-------|
 | 0 Shell & open folder | Done | Security-scoped access on open; bookmark helpers in `ProjectStore` |
-| 1 Swift extraction | Done | Lightweight tokenizer (no SwiftSyntax) |
+| 1 Swift extraction | Done | Lightweight tokenizer (no SwiftSyntax); filters images, colors, hex, logging |
 | 2 Localization parsing | Done | `LocalizationKey` lives in `LocalizationEntry.swift` |
 | 3 Audit & detail UI | Done | Search + filter wired in toolbar area |
-| 4 Ignore list & store | Done | Context menu on localization rows; inline editing & saving of translations |
+| 4 Ignore list & store | Done | Global ignore list (`GlobalIgnoreStore`) with per-language support; inline editing & saving |
 | 5 Polish | Done | Background scan + cancel on re-open; recent projects auto-open on launch |
+| 6 AI & Translation | Done | 6 AI providers + 3 free fallbacks; batch translation; comment generation; bulk import |
+| 7 Menu Commands & Settings | Done | `AppCommands` (File + View menus); Settings window (AI config, ignored keys) |
 
 **Build note:** Project uses `PBXFileSystemSynchronizedRootGroup` — new files under `LocalizerHelper/` are picked up automatically by Xcode.
 
+---
+
 ## 1. Overview
 
-**LocalizerHelper** is a macOS-only SwiftUI app that helps developers audit localization in Xcode projects. The user opens a project folder, browses its file tree, inspects string literals in Swift source, and reviews localization coverage across `.strings` and `.xcstrings` files with warnings and errors.
+**LocalizerHelper** is a macOS-only SwiftUI app that helps developers audit localization in Xcode projects. The user opens a project folder, browses its file tree, inspects string literals in Swift source, and reviews localization coverage across `.strings` and `.xcstrings` files with warnings and errors. Translations can be generated automatically via AI or free translation services and saved directly back to the source files.
 
 **Platform:** macOS only (developers work on Mac).
 
-**Not in scope (v1):**
+**Originally deferred, now implemented:**
+
+- AI-assisted translation (Claude, OpenAI, Gemini, Ollama, LM Studio, MLX)
+- Inline editing of `.strings` and `.xcstrings` files
+- Developer comment generation from source context
+- Bulk string import from Swift literals
+- macOS menu bar commands (File + View menus)
+- Settings window (AI provider config, ignored keys management)
+
+**Still out of scope (v1):**
 
 - iOS / iPad builds
-- AI-assisted translation (within the app UI itself, though a Python utility script `translator.py` is included for external automation)
 - Export (CSV, JSON, markdown reports)
-- Scanning `Pods`, `DerivedData`, or `.git`
+- Swift ↔ localization key cross-reference
 
 ---
 
@@ -42,6 +54,9 @@
 | **Localization audit** | Parse `.strings` / `.xcstrings`, compare across languages |
 | **Actionable issues** | Warnings and errors with per-project ignore list |
 | **Project memory** | Identify projects by folder / scheme name; persist ignores locally |
+| **Translation** | Auto-translate missing keys via AI or free services |
+| **Inline editing** | Save translation changes directly back to `.strings` / `.xcstrings` |
+| **Menu commands** | Standard macOS menu bar with keyboard shortcuts for common actions |
 
 ---
 
@@ -67,33 +82,35 @@ flowchart TB
         F --> J[Cross-language comparison]
         I --> J
         J --> K[Warnings / Errors / Ignored]
+        K --> L[Translate / Edit / Ignore / Delete]
     end
 ```
 
 ### 3.1 Open project
 
-1. User clicks **Open Project** in toolbar.
-2. `NSOpenPanel` (folder only, can choose files inside).
+1. User clicks **Open Project** in toolbar or uses File > Open Project… (Cmd+O).
+2. `NSOpenPanel` (folder only).
 3. App scans recursively on a background queue.
 4. Tree populates; localization catalog builds in parallel.
+5. Security-scoped bookmark saved so app can reopen on next launch without user re-granting access.
 
 ### 3.2 Select folder or root
 
-- Selection highlights the node (opening/displaying the raw file is **not** required).
 - Detail panel shows:
   - **Strings sections** grouped by source file (`.strings` / `.xcstrings`).
   - Each entry: key, English value, translations per language where present.
   - **Audit badges** on each key (OK / warning / error / ignored).
+  - Inline translation editing; AI batch-translate button.
 
 ### 3.3 Select Swift file
 
 - Detail panel shows **string literals** extracted from that file.
-- Includes smart handling of interpolated strings (see §5.3).
-- Optional cross-link later: mark whether each literal appears to map to a localization key (out of scope for strict v1 unless trivial).
+- Indicates which literals are **missing** from the localization catalog.
+- **Bulk Add** button: batch-create localization entries for missing strings, with optional AI or free translation.
 
 ### 3.4 Select non-Swift, non-folder file
 
-- Tree selection only; detail panel shows empty state or brief file info (name, path). No file content viewer.
+- Tree selection only; detail panel shows empty state or brief file info. No file content viewer.
 
 ---
 
@@ -107,9 +124,11 @@ flowchart TB
 
 | Name | Reason |
 |------|--------|
-| `Pods` | Third-party; not project localizations |
+| `Pods` | Third-party CocoaPods dependencies |
 | `DerivedData` | Build artifacts |
 | `.git` | Version control metadata |
+| `build` / `.build` | Build output |
+| `Carthage` | Carthage dependencies |
 
 ### 4.3 Parsed file types (background)
 
@@ -128,7 +147,7 @@ flowchart TB
 
 ```swift
 struct FileNode: Identifiable, Hashable {
-    let id: UUID
+    let id: URL         // URL used as stable identity
     let name: String
     let url: URL
     let isDirectory: Bool
@@ -145,12 +164,12 @@ enum FileKind {
 }
 ```
 
-Built depth-first; folders included if they contain any children after filtering excluded dirs.
+Built depth-first; sorted directories-first then alphabetically. Excluded dirs are skipped entirely.
 
 ### 5.2 Localization model
 
 ```swift
-struct LocalizationKey: Hashable {
+struct LocalizationKey: Hashable, Codable {
     let key: String
     let tableName: String   // e.g. "Localizable", "InfoPlist"
 }
@@ -161,6 +180,7 @@ struct LocalizationEntry: Identifiable {
     let language: String    // BCP-47-ish: "en", "de", …
     let value: String
     let sourceFile: URL
+    let comment: String?    // developer comment from .xcstrings
 }
 
 struct LocalizationCatalog {
@@ -171,49 +191,50 @@ struct LocalizationCatalog {
 
 **English sources:** `en.lproj` and `Base.lproj` are both treated as **English (base)**.
 
-**Dedup within one file:** If the same key appears multiple times in a single `.strings` or `.xcstrings` file, keep **one** entry (last wins or first wins — document choice in implementation; prefer last wins as it mirrors runtime).
+**Dedup within one file:** Same key appearing multiple times → last wins (mirrors runtime).
 
 ### 5.3 Swift string literal extraction
 
 Extract text inside double-quoted Swift string literals for display when a `.swift` file is selected.
 
-**Must handle:**
-
 | Case | Example | Display approach |
 |------|---------|------------------|
 | Plain literal | `"Hello"` | `Hello` |
-| Interpolation prefix | `"\(name) welcome"` | `{name} welcome` or `\(name) welcome` with label “contains variable” |
+| Interpolation prefix | `"\(name) welcome"` | `{name} welcome` |
 | Interpolation suffix | `"Welcome \(name)"` | `Welcome {name}` |
 | Multiple interpolations | `"\(a) and \(b)"` | `{a} and {b}` |
 | Escaped quotes | `"Say \"hi\""` | `Say "hi"` |
 | Multiline `"""` | Block strings | Extract static segments; mark interpolations |
-
-**Implementation note:** Prefer SwiftSyntax or regex/heuristic tokenizer. For v1, a focused lexer that tracks `"` / `"""` and `\(...)` regions is acceptable. Show a **pattern** string for interpolated literals rather than hiding them.
+| Images / Colors | `Image("logo")` or `.color("bg")` | **Skipped** (detected via preceding call symbol/label) |
+| Hex strings | `"#f023ff"` or `"#fff"` | **Skipped** (hex pattern matching) |
+| Print / Logging | `print("msg")`, `Logger.debug(...)` | **Skipped** (detected via enclosing call name) |
 
 ```swift
 struct SwiftStringLiteral: Identifiable {
     let id: UUID
-    let raw: String           // Original source snippet
-    let displayPattern: String // Human-readable with placeholders
+    let raw: String            // Original source snippet
+    let displayPattern: String // Human-readable with {placeholders}
     let hasInterpolation: Bool
     let lineNumber: Int
+    let sourceLine: String     // Full trimmed source line for context
 }
 ```
+
+**Localization template:** `localizationTemplate` converts Swift `\(expr)` to printf-style `%1$@`, `%2$@` for use as localization key values.
 
 ### 5.4 `.strings` parser
 
 - Parse `"key" = "value";` lines.
 - Skip comments (`//`, `/* */`).
-- Handle escaped characters inside keys and values.
-- Infer `tableName` from filename (e.g. `Localizable.strings` → `Localizable`).
-- Infer `language` from parent `.lproj` folder (`de.lproj` → `de`; `Base.lproj` / `en.lproj` → `en`).
+- Handle escaped characters (`\n`, `\t`, `\r`, `\"`, `\\`).
+- **Encoding detection:** Tries UTF-8, UTF-16 LE/BE, macOS Roman, ISO-Latin-1.
+- Infer `tableName` from filename; `language` from parent `.lproj` folder.
 
 ### 5.5 `.xcstrings` parser
 
 - Decode JSON (String Catalog format).
-- Read `sourceLanguage` metadata (informational; **audit base is always English** per product rule).
-- For each key in `strings`, read `localizations[language].stringUnit.value`.
-- `tableName` from filename (e.g. `Localizable.xcstrings`).
+- For each key in `strings`, read `localizations[language].stringUnit.value` and `comment`.
+- `tableName` from filename. Language `Base` → `"en"`.
 
 ---
 
@@ -221,133 +242,167 @@ struct SwiftStringLiteral: Identifiable {
 
 Base language: **English** (`en`, `Base.lproj`).
 
-For each localization key (scoped to a **table**), compare English value against every other language found in the project for that table.
-
 | Severity | Rule ID | Condition | Message (example) |
 |----------|---------|-----------|-------------------|
-| **Error** | `missing_translation` | Key exists in English but value in language X is **empty** | `"welcome_title" is empty in de` |
-| **Error** | `untranslated_copy` | Value in language X **equals** English value (non-ignored) | `"welcome_title" in de matches English — missing translation` |
-| **Warning** | `missing_language` | Key exists in English but **absent** in language X | `"welcome_title" missing in de.lproj/Localizable.strings` |
-| **Warning** | `duplicate_across_files` | Same key appears in **different** localizable files (tables) | `"app_name" appears in Localizable and InfoPlist` |
-| **Ignored** | — | User added key to project ignore list | Shown dimmed / filterable, not counted in error totals |
+| **Error** | `missing_translation` | Value in language X is **empty** | `"welcome_title" is empty in de` |
+| **Error** | `untranslated_copy` | Value in language X **equals** English value | `"welcome_title" in de matches English` |
+| **Warning** | `missing_language` | Key absent in language X | `"welcome_title" missing in de.lproj/Localizable.strings` |
+| **Warning** | `duplicate_across_files` | Same key in **different** table files | `"app_name" in Localizable and InfoPlist` |
+| **Ignored** | — | Key in global ignore list | Shown dimmed; not counted in error totals |
 
-**Ignore list:**
-
-- User can mark specific keys (per table) as ignored for `untranslated_copy` checks (e.g. brand names).
-- Persisted **per project** (see §8).
-
-**Duplicate keys:**
-
-- Same key twice in **one** file → single displayed entry (no duplicate issue).
-- Same key in **different** tables/files → **warning** (`duplicate_across_files`).
+**Global ignore list:**
+- User can mark keys as ignored globally (optionally per-language) via right-click or settings.
+- Persisted per-device in `Application Support/LocalizerHelper/global_ignores.json`.
 
 ---
 
-## 7. UI architecture (macOS)
+## 7. Translation
 
-### 7.1 Layout
+### 7.1 Providers
 
-`NavigationSplitView` with three conceptual zones:
+| Tier | Provider | Type |
+|------|----------|------|
+| AI | Claude (Anthropic) | Cloud API |
+| AI | OpenAI (GPT-4o mini) | Cloud API |
+| AI | Google Gemini | Cloud API |
+| AI | Ollama | Local server |
+| AI | LM Studio | Local server |
+| AI | MLX | Local server |
+| Free | Google Translate (unofficial) | Web scrape |
+| Free | MyMemory | Free API |
+| Free | LibreTranslate | Open-source API |
+
+### 7.2 Strategy
+
+- If an AI provider is configured with a key: try AI first, fall back to free chain on failure.
+- Free chain order: ≤2 words → Google → MyMemory → LibreTranslate; 3+ words → MyMemory → Google → LibreTranslate.
+- **Batch AI translation:** Single API call translates one key to all target languages at once.
+- **Placeholder protection:** Swift interpolations and printf-style `%@`, `%d`, etc. are replaced with `__PH0__` tokens before translation and restored after.
+
+### 7.3 Comment generation
+
+- AI-powered: given the source Swift line and the key name, generates a developer comment describing what the string is for.
+- Stored in `.xcstrings` comment field.
+
+---
+
+## 8. UI architecture (macOS)
+
+### 8.1 Layout
+
+`NavigationSplitView` with two zones:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Toolbar: Open Project | Search | Filter (All/Issues/…)    │
-├──────────────┬──────────────────────────────────────────────┤
-│              │  Header: selected path + issue summary chips  │
-│  File Tree   │  ─────────────────────────────────────────── │
-│  (sidebar)   │  Detail content:                              │
-│              │   • Folder/Root → Localization sections       │
-│              │   • Swift file → String literals list         │
-│              │   • Other → Empty / minimal info              │
-│              │                                               │
-└──────────────┴──────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│  Menu Bar: File (Open, Refresh) | View (Localizable, Filter)  │
+├───────────────────────────────────────────────────────────────┤
+│  Toolbar: Open Project | Refresh | Add Language | Localizable │
+│           Search | Scope | Match Case | Whole Word            │
+├──────────────┬────────────────────────────────────────────────┤
+│              │  Header: selected path + issue summary chips   │
+│  File Tree   │  ─────────────────────────────────────────────│
+│  (sidebar)   │  Detail content:                               │
+│              │   • Folder/Root → Localization sections        │
+│              │   • Swift file → String literals list          │
+│              │   • Other → Empty / minimal info               │
+└──────────────┴────────────────────────────────────────────────┘
 ```
 
-### 7.2 Tree sidebar
+### 8.2 Menu bar commands
 
-- Collapsible folders, disclosure triangles.
-- Icons by `FileKind` (folder, Swift, strings catalog, generic file).
-- Single selection drives detail panel (no separate “open file” step).
+Implemented via `AppCommands` using `FocusedValues` to bridge the ViewModel:
 
-### 7.3 Detail — localization view (folder / root)
+**File menu** (replaces default "New"):
+- Open Project… (Cmd+O)
+- Refresh Project (Cmd+R)
+
+**View menu** (new):
+- View Localization File (Cmd+L) — single item or submenu for multiple files
+- Add Language…
+- Show All Strings (Cmd+1)
+- Show Errors Only (Cmd+2)
+- Show Warnings Only (Cmd+3)
+- Show Ignored Only (Cmd+4)
+- Show AI Ready Only (Cmd+5)
+
+### 8.3 Settings window
+
+Opened via Cmd+, (standard macOS convention). Two tabs:
+- **AI Translation:** Provider picker, API key fields (Keychain-backed), local server URL + model picker
+- **Ignored Keys:** Table of all globally ignored keys with delete support
+
+### 8.4 Detail — localization view (folder / root)
 
 Sections per source file:
 
 ```
 ▼ Localizable.xcstrings
-    welcome_title          "Welcome"        en ✓  de ✓  fr ⚠ missing
-    settings_title         "Settings"       en ✓  de ✗ untranslated
+    welcome_title     "Welcome"    en ✓  de ✓  fr ⚠ missing
+    settings_title    "Settings"   en ✓  de ✗ untranslated
 
 ▼ de.lproj / Localizable.strings
     …
 ```
 
-- Tap row → expand translations side-by-side or inline chips per language.
-- Context menu or button: **Ignore this key** (adds to project ignore store).
+- Expand row → edit translations inline; AI batch-translate button.
+- Context menu / button: **Ignore**, **Delete**, **Edit Comment**.
 - Top summary bar: `3 errors · 5 warnings · 2 ignored`
 
-### 7.4 Detail — Swift strings view
+### 8.5 Detail — Swift strings view
 
-List/table:
+| Pattern | Raw | Line | Status |
+|---------|-----|------|--------|
+| `{name} welcome` | `"\(name) welcome"` | 42 | Missing |
 
-| Pattern | Raw | Line | Notes |
-|---------|-----|------|-------|
-| `{name} welcome` | `"\(name) welcome"` | 42 | Contains variable |
-
-### 7.5 Visual design principles
-
-- Native macOS spacing and materials (`sidebar`, `content` backgrounds).
-- Semantic colors: red (error), orange (warning), green (OK), secondary (ignored).
-- Monospace for keys and file paths; readable body font for values.
-- Search filters tree and detail lists simultaneously.
+- **Bulk Add** button opens `BulkAddSheet` — select strings, pick target file, choose translation mode (none / free / AI), progress bar.
 
 ---
 
-## 8. Project identification & persistence
+## 9. Project identification & persistence
 
-### 8.1 Project identity
+### 9.1 Project identity
 
-Derive a stable **project ID** from:
-
-1. **Primary:** Parent folder name of the opened directory (e.g. `MyApp` when opening `…/MyApp/`).
+1. **Primary:** Name of exactly one `.xcodeproj` in the opened folder.
 2. **Fallback:** Last path component of the selected URL.
-3. **Optional enhancement:** Read `.xcodeproj` bundle name if exactly one exists in the opened folder (scheme-like name).
 
-Use this ID as key for stored data.
+### 9.2 Stored data
 
-### 8.2 Stored data (per project)
-
-Location: `Application Support/LocalizerHelper/Projects/<projectID>/`
-
-| File | Contents |
-|------|----------|
-| `ignored-keys.json` | `[{ "table": "Localizable", "key": "AppName" }, …]` |
-| `last-opened.json` (optional) | Bookmark / path for recent projects |
-
-Use security-scoped bookmarks if sandboxed access to reopened folders is required.
+| Location | File | Contents |
+|----------|------|----------|
+| `Application Support/LocalizerHelper/` | `last-project.bookmark` | Security-scoped bookmark for auto-reopen |
+| `Application Support/LocalizerHelper/` | `global_ignores.json` | `[{ "key": "AppName", "language": null }, …]` |
+| Keychain | `com.LocalizerHelper.*` | Claude, OpenAI, Gemini API keys |
+| UserDefaults | — | AI provider preference, local server URLs, model names |
 
 ---
 
-## 9. Module structure
+## 10. Module structure
 
 ```
 LocalizerHelper/
-├── App/
-│   └── LocalizerHelperApp.swift
+├── LocalizerHelperApp.swift
+├── AppCommands.swift               // macOS menu bar (File + View menus)
+├── AppleTranslator.swift           // On-device translation (disabled — NLTranslator unavailable)
+├── AppleTranslateSupportedLanguages.swift
 ├── Models/
 │   ├── FileNode.swift
 │   ├── FileKind.swift
-│   ├── LocalizationEntry.swift
-│   ├── LocalizationKey.swift
+│   ├── LocalizationEntry.swift     // LocalizationKey, LocalizationEntry, LocalizationCatalog
 │   ├── SwiftStringLiteral.swift
-│   └── AuditIssue.swift
+│   ├── AuditIssue.swift            // AuditSeverity, AuditRuleID, AuditIssue, KeyAuditResult, SearchScope, DetailFilter
+│   ├── LanguageOption.swift        // All system-available BCP-47 language codes
+│   ├── GlobalIgnoreEntry.swift     // Ignored key (key + optional language)
+│   └── AISettings.swift            // AIProvider enum + AISettings singleton
 ├── Services/
 │   ├── ProjectScanner.swift
 │   ├── StringsParser.swift
 │   ├── XCStringsParser.swift
 │   ├── SwiftStringExtractor.swift
 │   ├── LocalizationAuditor.swift
-│   └── ProjectStore.swift          // identity + ignore persistence
+│   ├── ProjectStore.swift          // Project identity + bookmark persistence
+│   ├── GlobalIgnoreStore.swift     // Observable singleton; persists global_ignores.json
+│   ├── LocalizationFileUpdater.swift // Edit/save .strings & .xcstrings
+│   └── TranslationService.swift    // AI + free translation (6 providers + 3 free services)
 ├── ViewModels/
 │   └── ProjectViewModel.swift
 └── Views/
@@ -357,101 +412,120 @@ LocalizerHelper/
     ├── SwiftStringsDetailView.swift
     ├── AuditSummaryView.swift
     ├── AuditBadgeView.swift
-    └── EmptySelectionView.swift
+    ├── EmptySelectionView.swift
+    ├── AddLanguageView.swift       // Add new language to localization files
+    ├── BulkAddSheet.swift          // Batch import Swift literals into localization
+    └── Settings/
+        ├── SettingsView.swift      // Tab container (AI Translation, Ignored Keys)
+        ├── AISettingsView.swift
+        └── IgnoredKeysSettingsView.swift
 ```
 
 ---
 
-## 10. Implementation phases
+## 11. Implementation phases
 
 ### Phase 0 — Shell & open folder
 
-- [x] `NSOpenPanel` + security-scoped bookmark (if sandboxed)
-- [x] `ProjectScanner` with exclusion rules
-- [x] `FileNode` tree in sidebar
-- [x] Selection state wired to empty detail placeholder
+- [x] `NSOpenPanel` + security-scoped bookmark
+- [x] `ProjectScanner` with exclusion rules (Pods, DerivedData, .git, build, Carthage)
+- [x] `FileNode` tree in sidebar with sort order (dirs first, then alpha)
+- [x] Selection state wired to detail placeholder
 
 ### Phase 1 — Swift string extraction
 
-- [x] `SwiftStringExtractor` with interpolation-aware patterns
-- [x] `SwiftStringsDetailView` for `.swift` selection
-- [x] Line numbers and raw snippet display
+- [x] `SwiftStringExtractor` with interpolation-aware tokenizer
+- [x] `SwiftStringsDetailView` with line numbers and raw snippets
+- [x] Filter: Image/Color calls, hex strings, logging calls
 
 ### Phase 2 — Localization parsing
 
-- [x] `StringsParser` + `XCStringsParser`
+- [x] `StringsParser` (multi-encoding) + `XCStringsParser`
 - [x] `LocalizationCatalog` aggregation
-- [x] English = `en` + `Base`
-- [x] Within-file deduplication
+- [x] English = `en` + `Base`; within-file deduplication (last wins)
 
 ### Phase 3 — Audit & detail UI
 
-- [x] `LocalizationAuditor` (all rule IDs)
-- [x] Folder/root detail with per-file sections
+- [x] `LocalizationAuditor` (all 4 rule IDs)
+- [x] `LocalizationDetailView` with per-file sections
 - [x] Issue summary chips and row badges
-- [x] Search and filter (all / errors / warnings / ignored)
+- [x] Search (text, match-case, whole-word, scope) and filter (all/errors/warnings/ignored/aiReady)
 
 ### Phase 4 — Ignore list & project store
 
-- [x] `ProjectStore` with project ID derivation
-- [x] Ignore key UI + persistence
-- [x] Ignored keys excluded from `untranslated_copy` errors
+- [x] `GlobalIgnoreStore` with per-language support, persisted to JSON
+- [x] Ignore/unignore UI (context menu + button in row detail)
+- [x] `IgnoredKeysSettingsView` for bulk management
 
 ### Phase 5 — Polish
 
-- [x] Recent projects (auto-opens the last-opened project on app startup using security-scoped bookmark persistence)
-- [x] Performance: background scan, cancel on re-open
-- [x] Empty states, error toasts for unreadable files _(scan errors via alert; unreadable-file list tracked in VM, no dedicated toast yet)_
-- [x] Localization editing support: `LocalizationFileUpdater` handles inline modifications of `.strings` and `.xcstrings` files, and detail UI provides an editing sheet.
-- [x] Python Translator Utility: `translator.py` Google Translate script for batch-translating localizations directly.
+- [x] Recent projects: auto-open last project on launch via security-scoped bookmarks
+- [x] Background scan with task cancellation on re-open
+- [x] `LocalizationFileUpdater`: inline edit + save for `.strings` and `.xcstrings`
+- [x] Create new localization file from within the app (save panel)
+- [x] Add Language: creates new `.lproj` or adds language to `.xcstrings`
+
+### Phase 6 — AI & Translation
+
+- [x] `TranslationService` with 6 AI providers and 3 free service fallbacks
+- [x] Placeholder protection (Swift interpolations and printf-style markers)
+- [x] Single-key translation in localization detail row
+- [x] Batch AI translation (one call → all languages)
+- [x] Developer comment generation from source line context
+- [x] `BulkAddSheet`: batch import Swift literals with optional translation
+- [x] `AISettingsView`: provider picker, API key fields (Keychain), local server config
+- [x] `LanguageOption.all`: dynamic list from system `Locale`
+
+### Phase 7 — Menu Commands & Settings
+
+- [x] `AppCommands`: File menu (Open, Refresh) and View menu (Localization File, Add Language, filter shortcuts)
+- [x] `FocusedValues` bridge connecting ViewModel to menu items
+- [x] `SettingsView` (Cmd+,): tabbed settings window registered in app scene
 
 ### Future (explicitly deferred)
 
-- Export audit report
-- AI translation suggestions integrated directly inside the Swift app UI
+- Export audit report (CSV, JSON, markdown)
 - Swift ↔ localization key cross-reference
+- Apple on-device translation (`AppleTranslator.swift` exists but disabled)
 - iOS / iPad targets
 
 ---
 
-## 11. Technical constraints
+## 12. Technical constraints
 
 | Topic | Approach |
 |-------|----------|
-| **Sandbox** | Enable App Sandbox; `com.apple.security.files.user-selected.read-only` |
-| **Concurrency** | `Task` / actor for scan and parse; `@MainActor` ViewModel |
-| **xcstrings + strings** | Both parsed; same table in both formats treated as separate sources unless paths indicate otherwise — prefer showing both; duplicate-across-files warning applies |
+| **Sandbox** | App Sandbox; `com.apple.security.files.user-selected.read-only` |
+| **Concurrency** | `Task` / actor for scan and parse; `@MainActor` ViewModel; `@Observable` |
+| **xcstrings + strings** | Both parsed; same table in both formats shown as separate sources |
 | **Language list** | Discovered dynamically from `.lproj` folders and xcstrings localizations |
+| **API key storage** | Keychain (`SecItemAdd` / `SecItemCopyMatching`) |
+| **Menu bridge** | `FocusedValues` + `@FocusedValue` in `Commands` struct |
 
 ---
 
-## 12. Decision log
+## 13. Decision log
 
 | Question | Decision |
 |----------|----------|
 | Platform | macOS only |
 | Base language | Always English; `en.lproj` + `Base.lproj` |
 | Tree content | All files |
-| Click behavior | Selection updates detail; no file editor |
+| Click behavior | Selection updates detail; no raw file editor |
 | Swift file detail | List of `""` literals with interpolation patterns |
 | Strings files | Background parse only |
-| Exclusions | `Pods`, `DerivedData`, `.git` |
-| Same as English | Error; ignorable per key per project |
-| Duplicate key same file | Show once |
+| Exclusions | Pods, DerivedData, .git, build, .build, Carthage |
+| Same as English | Error; ignorable per key (global, optional per-language) |
+| Duplicate key same file | Show once (last wins) |
 | Duplicate key different files | Warning |
+| AI translation | Implemented (Claude, OpenAI, Gemini, Ollama, LM Studio, MLX) |
+| Free translation fallback | 3 services (Google, MyMemory, LibreTranslate) |
+| Placeholder safety | Swift `\(...)` and printf `%@/%d` tokenized before translation |
+| API key storage | Keychain (not UserDefaults) |
+| Project identity | `.xcodeproj` name if exactly one found, else root folder name |
+| Menu commands | `AppCommands` with `FocusedValues` bridge |
+| Settings | Registered as `Settings` scene; opened via Cmd+, |
 | Export | Deferred |
-| AI translation | Deferred |
-| Project identity | Folder / xcodeproj name under Application Support |
-
----
-
-## 13. Open implementation details (minor)
-
-These can be decided during build without plan changes:
-
-1. **Swift extractor:** ~~SwiftSyntax package vs lightweight tokenizer~~ → **lightweight tokenizer** (implemented).
-2. **Last-wins vs first-wins** for duplicate keys in one file → **last wins** (implemented in `StringsParser` / `XCStringsParser`).
-3. **Recent projects** list in Phase 5 vs skipping for minimal v1 → **deferred** (bookmark helpers ready in `ProjectStore`).
 
 ---
 

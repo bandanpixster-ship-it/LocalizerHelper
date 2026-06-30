@@ -9,9 +9,17 @@
 import SwiftUI
 
 struct ContentView: View {
-    @State private var viewModel = ProjectViewModel()
+    @State private var viewModel: ProjectViewModel
     @State private var hasAutoOpened = false
     @State private var showAddLanguage = false
+    @State private var initialProjectURL: URL?
+    @State private var autoOpenLastProject: Bool
+
+    init(initialProjectURL: URL? = nil, autoOpenLastProject: Bool = true) {
+        _viewModel = State(initialValue: ProjectViewModel())
+        _initialProjectURL = State(initialValue: initialProjectURL)
+        _autoOpenLastProject = State(initialValue: autoOpenLastProject)
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -19,6 +27,14 @@ struct ContentView: View {
         } detail: {
             detailPanel
         }
+        .focusedValue(\.projectViewModel, viewModel)
+        .focusedValue(\.showAddLanguageAction, { showAddLanguage = true })
+        .focusedValue(\.openProjectInNewWindowAction, {
+            viewModel.openProjectInNewWindow { projectURL in
+                WindowCoordinator.shared.openProjectWindow(with: projectURL)
+            }
+        })
+        .navigationTitle(windowTitle)
         .navigationSplitViewStyle(.balanced)
         .toolbar { toolbarContent }
         .searchable(text: $viewModel.searchText, prompt: "Search keys or literals")
@@ -37,22 +53,52 @@ struct ContentView: View {
         } message: {
             Text(viewModel.scanError ?? "")
         }
+        .confirmationDialog("Project Already Open", isPresented: $viewModel.showOpenProjectChoice, titleVisibility: .visible) {
+            Button("Open in This Window") {
+                viewModel.openPendingProjectInCurrentWindow()
+            }
+            Button("Open in New Window") {
+                if let projectURL = viewModel.pendingProjectURL {
+                    WindowCoordinator.shared.openProjectWindow(with: projectURL)
+                }
+                viewModel.cancelPendingProjectOpen()
+            }
+            Button("Cancel", role: .cancel) {
+                viewModel.cancelPendingProjectOpen()
+            }
+        } message: {
+            Text("This window already has a project open. Choose whether to replace it here or open the selected project in a new window.")
+        }
         .onAppear {
-            // Auto-open last project on app launch (only once per session)
             guard !hasAutoOpened else { return }
             hasAutoOpened = true
-            
+
+            if let initialProjectURL {
+                DispatchQueue.main.async {
+                    viewModel.openProject(at: initialProjectURL)
+                }
+                return
+            }
+
+            guard autoOpenLastProject else { return }
+
             let projectStore = ProjectStore()
             if let lastURL = projectStore.loadLastProjectURL() {
-                print("🔄 Auto-opening last project: \(lastURL.path)")
-                // Give the view a moment to render first, then open
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     viewModel.openProject(at: lastURL)
                 }
-            } else {
-                print("ℹ️ No last project found to auto-open")
             }
         }
+    }
+
+    private var windowTitle: String {
+        if let selected = viewModel.selectedNode {
+            return selected.name
+        }
+        if let rootURL = viewModel.rootURL {
+            return rootURL.lastPathComponent
+        }
+        return "LocalizerHelper"
     }
 
     @ViewBuilder
@@ -97,6 +143,15 @@ struct ContentView: View {
         if viewModel.selectedNode != nil {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
+                    Button {
+                        viewModel.goBackToPreviousSelection()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(!viewModel.canGoBackInSelection)
+                    .help("Go back to the previous selection")
+
                     Text(viewModel.selectedNode?.url.path ?? "")
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -120,13 +175,15 @@ struct ContentView: View {
                             ignored: viewModel.issueSummary.ignored
                         )
                         Spacer(minLength: 8)
-                        Picker("Filter", selection: $viewModel.detailFilter) {
-                            ForEach(DetailFilter.allCases) { filter in
-                                Text(filter.label).tag(filter)
+                        if canShowLocalizationFilters {
+                            Picker("Filter", selection: $viewModel.detailFilter) {
+                                ForEach(DetailFilter.allCases) { filter in
+                                    Text(filter.label).tag(filter)
+                                }
                             }
+                            .pickerStyle(.segmented)
+                            .frame(maxWidth: 320)
                         }
-                        .pickerStyle(.segmented)
-                        .frame(maxWidth: 320)
                     }
                 }
             }
@@ -223,6 +280,11 @@ struct ContentView: View {
         return selected.fileKind == .directory || selected.fileKind == .strings || selected.fileKind == .xcstrings
     }
 
+    private var canShowLocalizationFilters: Bool {
+        guard let selected = viewModel.selectedNode else { return false }
+        return selected.fileKind == .strings || selected.fileKind == .xcstrings
+    }
+
     @ViewBuilder
     private var openLocalizableButton: some View {
         let files = viewModel.localizationFiles
@@ -267,6 +329,12 @@ struct ContentView: View {
             .help("Add a new language to your localization files")
 
             openLocalizableButton
+
+            Button(action: { viewModel.goBackToPreviousSelection() }) {
+                Label("Back", systemImage: "chevron.left")
+            }
+            .disabled(!viewModel.canGoBackInSelection)
+            .help("Go back to the previous selection")
         }
 
         ToolbarItemGroup(placement: .automatic) {

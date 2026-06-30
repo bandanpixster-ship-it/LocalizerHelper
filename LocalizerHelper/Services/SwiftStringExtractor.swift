@@ -31,17 +31,23 @@ struct SwiftStringExtractor: Sendable {
                     : extractSingleLineLiteral(from: source, start: index, lineNumber: lineNumber)
                 {
                     let sourceLine = lineNumber <= sourceLines.count
-                        ? sourceLines[lineNumber - 1].trimmingCharacters(in: .whitespaces)
-                        : ""
+                    ? sourceLines[lineNumber - 1].trimmingCharacters(in: .whitespaces)
+                    : ""
                     let lit = extracted.literal
-                    results.append(SwiftStringLiteral(
-                        id: lit.id,
-                        raw: lit.raw,
-                        displayPattern: lit.displayPattern,
-                        hasInterpolation: lit.hasInterpolation,
-                        lineNumber: lit.lineNumber,
-                        sourceLine: sourceLine
-                    ))
+                    let trimmedDisplay = lit.displayPattern.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !isNonLocalizableContent(trimmedDisplay)
+                        && !isHexString(trimmedDisplay)
+                        && !isImageOrColorLiteral(in: source, before: index)
+                        && !isInsideLoggingCall(in: source, before: index) {
+                        results.append(SwiftStringLiteral(
+                            id: lit.id,
+                            raw: lit.raw,
+                            displayPattern: lit.displayPattern,
+                            hasInterpolation: lit.hasInterpolation,
+                            lineNumber: lit.lineNumber,
+                            sourceLine: sourceLine
+                        ))
+                    }
                     index = extracted.endIndex
                     lineNumber += extracted.newlinesCrossed
                     continue
@@ -256,5 +262,227 @@ struct SwiftStringExtractor: Sendable {
         }
 
         return nil
+    }
+
+    // MARK: - Non-Localizable Content Filter
+
+    /// Returns true for strings that are clearly not human-readable text requiring localization.
+    /// Kept conservative — only cuts obvious non-text to avoid hiding real strings.
+    private func isNonLocalizableContent(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+
+        // Single character — too short to be user-facing text
+        if trimmed.count == 1 { return true }
+
+        // Pure numeric (integers, floats, hex literals like 0xFF)
+        if trimmed.allSatisfy({ $0.isNumber || $0 == "." || $0 == "-" || $0 == "x" || $0 == "X" }) { return true }
+
+        // URLs
+        let urlPrefixes = ["http://", "https://", "ftp://", "file://"]
+        if urlPrefixes.contains(where: { trimmed.hasPrefix($0) }) { return true }
+
+        // File paths (absolute or home-relative)
+        if trimmed.hasPrefix("/") || trimmed.hasPrefix("~/") { return true }
+
+        // File extension only (e.g. ".swift", ".json")
+        if trimmed.hasPrefix(".") && !trimmed.contains(" ") && trimmed.count <= 10 { return true }
+
+        // Bundle identifier pattern: all-lowercase with 2+ dot-separated segments, no spaces
+        // e.g. "com.example.app", "com.apple.foundation"
+        if !trimmed.contains(" ") {
+            let parts = trimmed.split(separator: ".")
+            if parts.count >= 3 && parts.allSatisfy({ seg in
+                !seg.isEmpty && seg.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+            }) && parts[0].allSatisfy({ $0.isLowercase || $0.isNumber }) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    // MARK: - Image, Color, and Hex Filtering Helpers
+
+    private func isHexString(_ text: String) -> Bool {
+        guard text.hasPrefix("#") else { return false }
+        let hexChars = text.dropFirst()
+        guard hexChars.count == 3 || hexChars.count == 4 || hexChars.count == 6 || hexChars.count == 8 else { return false }
+        return hexChars.allSatisfy { $0.isHexDigit }
+    }
+
+    private func isImageOrColorLiteral(in source: String, before index: String.Index) -> Bool {
+        var cur = index
+        while cur > source.startIndex {
+            let prev = source.index(before: cur)
+            let char = source[prev]
+            if char.isWhitespace {
+                cur = prev
+            } else {
+                break
+            }
+        }
+
+        guard cur > source.startIndex else { return false }
+        let prevCharIndex = source.index(before: cur)
+        let prevChar = source[prevCharIndex]
+
+        if prevChar == "(" {
+            return checkSymbolBeforeParen(in: source, before: prevCharIndex)
+        } else if prevChar == ":" {
+            return checkLabelAndSymbolBeforeColon(in: source, before: prevCharIndex)
+        }
+
+        return false
+    }
+
+    private func extractPrecedingIdentifier(in source: String, before index: String.Index) -> (identifier: String, nextIndex: String.Index)? {
+        var cur = index
+        while cur > source.startIndex {
+            let prev = source.index(before: cur)
+            if source[prev].isWhitespace {
+                cur = prev
+            } else {
+                break
+            }
+        }
+
+        var idChars: [Character] = []
+        while cur > source.startIndex {
+            let prev = source.index(before: cur)
+            let char = source[prev]
+            if char.isLetter || char.isNumber || char == "_" || char == "." {
+                idChars.append(char)
+                cur = prev
+            } else {
+                break
+            }
+        }
+
+        if idChars.isEmpty { return nil }
+        let identifier = String(idChars.reversed())
+        return (identifier, cur)
+    }
+
+    private func checkSymbolBeforeParen(in source: String, before parenIndex: String.Index) -> Bool {
+        guard let symbolResult = extractPrecedingIdentifier(in: source, before: parenIndex) else {
+            return false
+        }
+
+        let symbol = symbolResult.identifier
+        let skipSymbols = ["Image", "UIImage", "NSImage", "Color", "UIColor", "NSColor"]
+        for skipSymbol in skipSymbols {
+            if symbol == skipSymbol || symbol.hasSuffix("." + skipSymbol) {
+                return true
+            }
+        }
+
+        let skipLowercased = [".image", ".color", "image", "color"]
+        for skipLower in skipLowercased {
+            if symbol == skipLower || symbol.hasSuffix("." + skipLower) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private func checkLabelAndSymbolBeforeColon(in source: String, before colonIndex: String.Index) -> Bool {
+        guard let labelResult = extractPrecedingIdentifier(in: source, before: colonIndex) else {
+            return false
+        }
+
+        let label = labelResult.identifier
+
+        // These labels always carry asset/symbol names regardless of the outer function
+        // e.g. Label("Title", systemImage: "gear"), Button(..., systemImage: "plus")
+        let alwaysSkipLabels = ["systemName", "systemImage"]
+        if alwaysSkipLabels.contains(label) { return true }
+
+        let imageOrColorLabels = ["named", "resourceName", "image", "color"]
+        guard imageOrColorLabels.contains(label) else {
+            return false
+        }
+
+        var cur = labelResult.nextIndex
+        while cur > source.startIndex {
+            let prev = source.index(before: cur)
+            if source[prev].isWhitespace {
+                cur = prev
+            } else {
+                break
+            }
+        }
+
+        guard cur > source.startIndex else { return false }
+        let prevCharIndex = source.index(before: cur)
+        let prevChar = source[prevCharIndex]
+        if prevChar == "(" {
+            return checkSymbolBeforeParen(in: source, before: prevCharIndex)
+        }
+
+        return false
+    }
+
+    // MARK: - Logging Call Filter
+
+    private func isInsideLoggingCall(in source: String, before index: String.Index) -> Bool {
+        let loggingFunctions: Set<String> = [
+            "print", "Swift.print",
+            "debugPrint", "Swift.debugPrint",
+            "NSLog",
+            "os_log", "os_signpost",
+            "Logger.debug", "Logger.info", "Logger.warning",
+            "Logger.error", "Logger.critical", "Logger.fault",
+            "Logger.notice", "Logger.log",
+            "log.debug", "log.info", "log.warning",
+            "log.error", "log.critical", "log.fault",
+            "log.notice", "log.log"
+        ]
+
+        // Suffix components of dot-method logging functions, e.g. ".debug", ".info"
+        // Used to match custom logger instances like `myLogger.debug(...)`
+        let loggingMethodSuffixes: Set<String> = [
+            "debug", "info", "warning", "error", "critical", "fault", "notice", "log"
+        ]
+
+        // Scan backwards to find the nearest unmatched opening paren
+        var depth = 0
+        var cur = index
+
+        while cur > source.startIndex {
+            cur = source.index(before: cur)
+            let char = source[cur]
+
+            switch char {
+            case ")":
+                depth += 1
+            case "(":
+                if depth == 0 {
+                    guard let result = extractPrecedingIdentifier(in: source, before: cur) else {
+                        return false
+                    }
+                    let callee = result.identifier
+
+                    // Direct match against known logging functions
+                    if loggingFunctions.contains(callee) { return true }
+
+                    // Suffix match: anything ending in a known logging method name
+                    // e.g. `myLogger.debug`, `appLog.error`
+                    if let dotRange = callee.range(of: ".", options: .backwards) {
+                        let suffix = String(callee[callee.index(after: dotRange.lowerBound)...])
+                        if loggingMethodSuffixes.contains(suffix) { return true }
+                    }
+
+                    return false
+                } else {
+                    depth -= 1
+                }
+            default:
+                break
+            }
+        }
+
+        return false
     }
 }
