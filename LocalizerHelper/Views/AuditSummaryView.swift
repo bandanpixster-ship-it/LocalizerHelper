@@ -14,25 +14,30 @@ struct AuditSummaryView: View {
     let ignored: Int
 
     var body: some View {
-        HStack(spacing: 12) {
-            summaryChip(count: errors, label: "errors", color: .red)
-            summaryChip(count: warnings, label: "warnings", color: .orange)
-            summaryChip(count: ignored, label: "ignored", color: .secondary)
+        HStack(spacing: 10) {
+            summaryChip(count: errors, label: "Errors", color: .red)
+            summaryChip(count: warnings, label: "Warnings", color: .orange)
+            summaryChip(count: ignored, label: "Ignored", color: .secondary)
         }
         .font(.caption)
     }
 
     private func summaryChip(count: Int, label: String, color: Color) -> some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
             Text("\(count)")
-                .fontWeight(.semibold)
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(color)
             Text(label)
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(.quaternary.opacity(0.5), in: Capsule())
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.thinMaterial, in: Capsule(style: .continuous))
+        .overlay(
+            Capsule(style: .continuous)
+                .strokeBorder(color.opacity(0.14), lineWidth: 1)
+        )
     }
 }
 

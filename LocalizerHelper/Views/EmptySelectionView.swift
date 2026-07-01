@@ -12,15 +12,35 @@ struct EmptySelectionView: View {
     let node: FileNode?
 
     var body: some View {
-        ContentUnavailableView {
-            Label(title, systemImage: iconName)
-        } description: {
-            Text(subtitle)
-                .font(.body)
-                .foregroundStyle(.secondary)
+        VStack(spacing: 16) {
+            Image(systemName: iconName)
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundStyle(.tint)
+                .frame(width: 64, height: 64)
+                .background(.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            VStack(spacing: 6) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                Text(subtitle)
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.background)
+        .padding(24)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color.accentColor.opacity(0.05),
+                    Color.clear
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
     }
 
     private var title: String {

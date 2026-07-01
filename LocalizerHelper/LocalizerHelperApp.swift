@@ -10,6 +10,11 @@ import SwiftUI
 
 @main
 struct LocalizerHelperApp: App {
+    init() {
+        // Disable macOS's automatic window tabbing ("+" tab bar) — this app doesn't support multiple tabs per window.
+        NSWindow.allowsAutomaticWindowTabbing = false
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()

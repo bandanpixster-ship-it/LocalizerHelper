@@ -124,13 +124,17 @@ enum Filter: String, CaseIterable, Identifiable {
                     }
                 }
                 .padding(16)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(.white.opacity(0.06), lineWidth: 1)
+                )
 
                 Table(rows) {
                     TableColumn("Pattern") { row in
                         Text(row.literal.displayPattern)
                             .font(.body)
-                            .foregroundColor(.primary)
+                            .foregroundStyle(.primary)
                     }
                     TableColumn("Raw") { row in
                         Text(row.literal.raw)
@@ -141,10 +145,10 @@ enum Filter: String, CaseIterable, Identifiable {
                     TableColumn("Status") { row in
                         Text(row.isMissing ? "Missing" : "Present")
                             .font(.caption.weight(.semibold))
-                            .foregroundColor(row.isMissing ? .orange : .green)
+                            .foregroundStyle(row.isMissing ? .orange : .green)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
-                            .background((row.isMissing ? Color.orange.opacity(0.16) : Color.green.opacity(0.16)), in: RoundedRectangle(cornerRadius: 12))
+                            .background((row.isMissing ? Color.orange.opacity(0.14) : Color.green.opacity(0.14)), in: RoundedRectangle(cornerRadius: 12))
                     }
                     TableColumn("Line") { row in
                         Text("\(row.literal.lineNumber)")
@@ -175,13 +179,13 @@ enum Filter: String, CaseIterable, Identifiable {
                     }
                 }
                 .tableStyle(.inset(alternatesRowBackgrounds: true))
-                .background(.background)
-                .cornerRadius(14)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
                 HStack(spacing: 12) {
                     Text("Showing \(rows.count) of \(literals.count) extracted literals")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+            .foregroundStyle(.secondary)
 
                     if rows.count < literals.count {
                         Text("\(literals.count - rows.count) remaining")
@@ -305,7 +309,8 @@ struct AddLocalizationSheet: View {
                 }
             }
             .padding()
-            .background(.regularMaterial)
+            .background(.ultraThinMaterial)
+            .background(.ultraThinMaterial)
 
             Divider()
 
@@ -372,7 +377,7 @@ struct AddLocalizationSheet: View {
                         if let validationError {
                             Text(validationError)
                                 .font(.caption)
-                                .foregroundColor(.red)
+                                .foregroundStyle(.red)
                         }
 
                         Picker("Target File", selection: $selectedFile) {
@@ -431,7 +436,7 @@ struct AddLocalizationSheet: View {
                                 Text(lang.uppercased())
                                     .frame(width: 40, alignment: .leading)
                                     .font(.caption.bold())
-                                    .foregroundColor(.secondary)
+                                    .foregroundStyle(.secondary)
                                 TextField("Translation", text: Binding(
                                     get: { translations[lang] ?? "" },
                                     set: { translations[lang] = $0 }

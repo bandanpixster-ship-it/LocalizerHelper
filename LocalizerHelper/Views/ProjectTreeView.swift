@@ -22,6 +22,7 @@ struct ProjectTreeView: View {
                         .foregroundStyle(iconColor(for: node))
                 }
                 .tag(node)
+                .padding(.vertical, 2)
                 .contextMenu {
                     Button(action: {
                         NSWorkspace.shared.selectFile(node.url.path, inFileViewerRootedAtPath: node.url.deletingLastPathComponent().path)
@@ -32,6 +33,8 @@ struct ProjectTreeView: View {
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .background(.background)
     }
 
     private func iconName(for node: FileNode) -> String {

@@ -43,11 +43,11 @@ struct BulkAddSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    filePicker
-                    translatePicker
-                    stringList
-                    if isRunning { progressSection }
-                    if let summary = resultSummary { resultSection(summary) }
+                    filePicker.modernCard()
+                    translatePicker.modernCard()
+                    stringList.modernCard()
+                    if isRunning { progressSection.modernCard() }
+                    if let summary = resultSummary { resultSection(summary).modernCard() }
                 }
                 .padding()
             }
@@ -79,7 +79,8 @@ struct BulkAddSheet: View {
                 .keyboardShortcut(.cancelAction)
                 .disabled(isRunning)
         }
-        .padding()
+        .padding(16)
+        .background(.ultraThinMaterial)
     }
 
     private var filePicker: some View {
@@ -90,8 +91,8 @@ struct BulkAddSheet: View {
                 }
             }
             .labelsHidden()
-            .padding(4)
         }
+        .modernCard(padding: 12)
     }
 
     @ViewBuilder
@@ -110,10 +111,10 @@ struct BulkAddSheet: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                .padding(4)
             } label: {
                 Text("Translation")
             }
+            .modernCard(padding: 12)
         }
     }
 
@@ -202,10 +203,10 @@ struct BulkAddSheet: View {
                     if lit.id != literals.last?.id { Divider() }
                 }
             }
-            .padding(4)
         } label: {
             Text("Strings to Add")
         }
+        .modernCard(padding: 12)
     }
 
     private var progressSection: some View {
@@ -218,8 +219,8 @@ struct BulkAddSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            .padding(4)
         }
+        .modernCard(padding: 12)
     }
 
     private func resultSection(_ summary: String) -> some View {

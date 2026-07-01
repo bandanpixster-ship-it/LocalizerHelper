@@ -28,9 +28,9 @@ struct ContentView: View {
         } detail: {
             detailPanel
         }
-        .focusedValue(\.projectViewModel, viewModel)
-        .focusedValue(\.showAddLanguageAction, { showAddLanguage = true })
-        .focusedValue(\.openProjectInNewWindowAction, {
+        .focusedSceneValue(\.projectViewModel, viewModel)
+        .focusedSceneValue(\.showAddLanguageAction, { showAddLanguage = true })
+        .focusedSceneValue(\.openProjectInNewWindowAction, {
             viewModel.openProjectInNewWindow { projectURL in
                 WindowCoordinator.shared.openProjectWindow(with: projectURL)
             }
@@ -77,6 +77,16 @@ struct ContentView: View {
         } message: {
             Text("This window already has a project open. Choose whether to replace it here or open the selected project in a new window.")
         }
+        .background(
+            LinearGradient(
+                colors: [
+                    Color.accentColor.opacity(0.06),
+                    Color.clear
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
         .onAppear {
             guard !hasAutoOpened else { return }
             hasAutoOpened = true
@@ -140,14 +150,24 @@ struct ContentView: View {
                     Text("Open a project folder to browse files and audit localizations.")
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding()
             }
         }
-        .navigationSplitViewColumnWidth(min: 220, ideal: 280)
+        .navigationSplitViewColumnWidth(min: 240, ideal: 300)
         .overlay {
             if viewModel.isScanning {
-                ProgressView("Scanning…")
-                    .padding()
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                VStack(spacing: 10) {
+                    ProgressView()
+                    Text("Scanning project…")
+                        .font(.subheadline.weight(.medium))
+                    Text("We’re indexing files and localization entries.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(16)
+                .frame(maxWidth: 240)
+                .modernCard()
             }
         }
     }
@@ -166,22 +186,28 @@ struct ContentView: View {
     private var detailHeader: some View {
         if viewModel.selectedNode != nil {
             VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 10) {
+                HStack(alignment: .center, spacing: 12) {
                     Button {
                         viewModel.goBackToPreviousSelection()
                     } label: {
-                        Image(systemName: "chevron.left")
-                            .frame(width: 28, height: 28)
+                        Label("Back", systemImage: "chevron.left")
+                            .labelStyle(.iconOnly)
+                            .frame(width: 34, height: 34)
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.bordered)
                     .disabled(!viewModel.canGoBackInSelection)
                     .help("Go back to the previous selection")
 
-                    Text(viewModel.selectedNode?.url.path ?? "")
-                        .font(.system(.subheadline, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(viewModel.selectedNode?.name ?? "")
+                            .font(.headline)
+                            .lineLimit(1)
+                        Text(viewModel.selectedNode?.url.path ?? "")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
 
                     Spacer(minLength: 12)
 
@@ -200,7 +226,7 @@ struct ContentView: View {
                 HStack(spacing: 10) {
                     TextField("Search keys or literals", text: $viewModel.searchText)
                         .textFieldStyle(.roundedBorder)
-                        .frame(width: 320)
+                        .frame(maxWidth: 360)
 
                     Menu {
                         ForEach(SearchScope.allCases) { scope in
@@ -257,12 +283,14 @@ struct ContentView: View {
                             }
                             .pickerStyle(.segmented)
                             .frame(maxWidth: 260)
+                            .padding(.horizontal, 20)
                         }
                     }
                 }
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 14)
+            .background(.ultraThinMaterial)
         }
     }
 

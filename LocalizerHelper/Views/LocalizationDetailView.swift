@@ -238,7 +238,7 @@ struct LocalizationDetailView: View {
                     }
                 }
                 .padding()
-                .frame(minWidth: 520, minHeight: 420)
+                .frame(minWidth: 520, minHeight: 420, maxHeight: 640)
                 .alert("Save changes?", isPresented: $showSaveConfirmation) {
                     Button("Cancel", role: .cancel) {
                         showSaveConfirmation = false
@@ -432,9 +432,9 @@ struct LocalizationDetailView: View {
             .frame(minWidth: 140)
         }
         .padding(12)
-        .background(.ultraThinMaterial)
+        .background(rowBackground(for: result))
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .shadow(color: Color.black.opacity(0.03), radius: 1, x: 0, y: 1)
+        .shadow(color: Color.primary.opacity(0.06), radius: 4, x: 0, y: 1)
         .contextMenu {
             Button("Edit Translations") {
                 openEditSession(for: result)
@@ -448,6 +448,16 @@ struct LocalizationDetailView: View {
                 deleteConfirmation = DeleteConfirmation(key: result.key, affectedFiles: files)
             }
         }
+    }
+
+    private func rowBackground(for result: KeyAuditResult) -> some ShapeStyle {
+        if result.highestSeverity == .error {
+            return AnyShapeStyle(Color.red.opacity(0.06))
+        }
+        if result.highestSeverity == .warning {
+            return AnyShapeStyle(Color.orange.opacity(0.05))
+        }
+        return AnyShapeStyle(.ultraThinMaterial)
     }
 
     private var nonEnglishLanguages: [String] {
@@ -489,7 +499,7 @@ struct LocalizationDetailView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(isLangIgnored ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.ultraThinMaterial))
+        .background(isLangIgnored ? AnyShapeStyle(.quaternary.opacity(0.7)) : AnyShapeStyle(.ultraThinMaterial))
         .clipShape(Capsule())
         .opacity(isLangIgnored ? 0.6 : 1)
     }

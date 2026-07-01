@@ -22,16 +22,19 @@ struct AddLanguageView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack {
-                Text("Add Language")
-                    .font(.headline)
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Add Language")
+                        .font(.headline)
+                    Text("Choose a language and the localization file to update.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Add") {
                     guard let code = selectedCode, let file = selectedFile else { return }
-                    // Determine appropriate message based on file type
                     if file.pathExtension.lowercased() == "strings" {
                         alertMessage = "The language '\(code)' will be added by creating a new .lproj folder and an empty .strings file. Xcode may need to be refreshed to show the folder. Proceed?"
                     } else {
@@ -54,60 +57,80 @@ struct AddLanguageView: View {
                     )
                 }
             }
-            .padding()
+            .padding(16)
+            .background(.ultraThinMaterial)
 
             Divider()
 
-            // File picker (only shown when multiple files)
-            if localizationFiles.count > 1 {
-                Picker("Target File", selection: $selectedFile) {
-                    ForEach(localizationFiles, id: \.self) { file in
-                        Text(file.lastPathComponent).tag(URL?.some(file))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if localizationFiles.count > 1 {
+                        GroupBox("Target File") {
+                            Picker("Target File", selection: $selectedFile) {
+                                ForEach(localizationFiles, id: \.self) { file in
+                                    Text(file.lastPathComponent).tag(URL?.some(file))
+                                }
+                            }
+                            .labelsHidden()
+                        }
+                        .modernCard(padding: 12)
                     }
-                }
-                .padding(.horizontal)
-                .padding(.top, 12)
-            }
 
-            // Search
-            HStack {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Search languages…", text: $search)
-                    .textFieldStyle(.plain)
-                if !search.isEmpty {
-                    Button { search = "" } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    HStack {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(.secondary)
+                        TextField("Search languages…", text: $search)
+                            .textFieldStyle(.plain)
+                        if !search.isEmpty {
+                            Button { search = "" } label: {
+                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(8)
-            .background(.quinary, in: RoundedRectangle(cornerRadius: 8))
-            .padding(.horizontal)
-            .padding(.top, 12)
+                    .padding(10)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
-            // Language list
-            List(filteredLanguages, selection: $selectedCode) { lang in
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(lang.displayName)
-                            .fontWeight(selectedCode == lang.code ? .semibold : .regular)
-                        Text(lang.code)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    List(filteredLanguages, selection: $selectedCode) { lang in
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(lang.displayName)
+                                    .fontWeight(selectedCode == lang.code ? .semibold : .regular)
+                                Text(lang.code)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if existingLanguages.contains(lang.code) {
+                                Text("Already added")
+                                    .font(.caption)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(.thinMaterial, in: Capsule())
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .tag(lang.code)
+                        .disabled(existingLanguages.contains(lang.code))
+                        .padding(.vertical, 4)
                     }
-                    Spacer()
-                    if existingLanguages.contains(lang.code) {
-                        Text("Already added")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    .listStyle(.inset)
+                    .scrollContentBackground(.hidden)
+                    .background(.clear)
+                    .modernCard(padding: 12)
                 }
-                .tag(lang.code)
-                .disabled(existingLanguages.contains(lang.code))
+                .padding(16)
             }
-            .listStyle(.inset)
+            .background(
+                LinearGradient(
+                    colors: [
+                        Color.accentColor.opacity(0.04),
+                        Color.clear
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
         }
         .frame(width: 380, height: 520)
         .onAppear {
