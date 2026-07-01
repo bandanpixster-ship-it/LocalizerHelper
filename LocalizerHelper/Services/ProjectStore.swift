@@ -9,6 +9,11 @@
 import Foundation
 
 struct ProjectStore: Sendable {
+    enum LastProjectLoadResult {
+        case found(URL)
+        case missing
+    }
+
     private let fileManager = FileManager.default
 
     func projectID(for rootURL: URL) -> String {
@@ -32,13 +37,14 @@ struct ProjectStore: Sendable {
         try bookmark.write(to: configURL, options: .atomic)
     }
 
-    func loadLastProjectURL() -> URL? {
+    func loadLastProjectURL() -> LastProjectLoadResult {
         let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let configURL = support
             .appendingPathComponent("LocalizerHelper", isDirectory: true)
             .appendingPathComponent("last-project.bookmark")
-        guard let bookmark = try? Data(contentsOf: configURL) else { return nil }
-        return resolveBookmark(bookmark)
+        guard let bookmark = try? Data(contentsOf: configURL) else { return .missing }
+        guard let url = resolveBookmark(bookmark) else { return .missing }
+        return .found(url)
     }
 
     func makeBookmark(for url: URL) -> Data? {

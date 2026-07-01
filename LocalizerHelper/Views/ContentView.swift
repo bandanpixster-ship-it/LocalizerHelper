@@ -12,6 +12,7 @@ struct ContentView: View {
     @State private var viewModel: ProjectViewModel
     @State private var hasAutoOpened = false
     @State private var showAddLanguage = false
+    @State private var showMissingProjectAlert = false
     @State private var initialProjectURL: URL?
     @State private var autoOpenLastProject: Bool
 
@@ -37,7 +38,6 @@ struct ContentView: View {
         .navigationTitle(windowTitle)
         .navigationSplitViewStyle(.balanced)
         .toolbar { toolbarContent }
-        .searchable(text: $viewModel.searchText, prompt: "Search keys or literals")
         .sheet(isPresented: $showAddLanguage) {
             AddLanguageView(
                 localizationFiles: viewModel.localizationFiles,
@@ -52,6 +52,14 @@ struct ContentView: View {
             Button("OK") { viewModel.scanError = nil }
         } message: {
             Text(viewModel.scanError ?? "")
+        }
+        .alert("Last Project Missing", isPresented: $showMissingProjectAlert) {
+            Button("Locate Project…") {
+                locateMissingProject()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The previously opened project could not be found at its saved location. You can locate a project folder manually.")
         }
         .confirmationDialog("Project Already Open", isPresented: $viewModel.showOpenProjectChoice, titleVisibility: .visible) {
             Button("Open in This Window") {
@@ -83,10 +91,12 @@ struct ContentView: View {
             guard autoOpenLastProject else { return }
 
             let projectStore = ProjectStore()
-            if let lastURL = projectStore.loadLastProjectURL() {
+            if case let .found(lastURL) = projectStore.loadLastProjectURL() {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     viewModel.openProject(at: lastURL)
                 }
+            } else {
+                showMissingProjectAlert = true
             }
         }
     }
@@ -99,6 +109,20 @@ struct ContentView: View {
             return rootURL.lastPathComponent
         }
         return "LocalizerHelper"
+    }
+
+    private func locateMissingProject() {
+        let panel = NSOpenPanel()
+        panel.title = "Locate Project Folder"
+        panel.message = "Choose the folder for the project that moved."
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.prompt = "Locate"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        viewModel.openProject(at: url)
     }
 
     @ViewBuilder
@@ -141,23 +165,26 @@ struct ContentView: View {
     @ViewBuilder
     private var detailHeader: some View {
         if viewModel.selectedNode != nil {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
                     Button {
                         viewModel.goBackToPreviousSelection()
                     } label: {
                         Image(systemName: "chevron.left")
+                            .frame(width: 28, height: 28)
                     }
                     .buttonStyle(.borderless)
                     .disabled(!viewModel.canGoBackInSelection)
                     .help("Go back to the previous selection")
 
                     Text(viewModel.selectedNode?.url.path ?? "")
-                        .font(.system(.caption, design: .monospaced))
+                        .font(.system(.subheadline, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Spacer(minLength: 8)
+
+                    Spacer(minLength: 12)
+
                     Button(action: {
                         if let url = viewModel.selectedNode?.url {
                             NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
@@ -165,10 +192,57 @@ struct ContentView: View {
                     }) {
                         Label("Open in Finder", systemImage: "folder")
                     }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                     .help("Open file or folder in Finder")
                 }
+
+                HStack(spacing: 10) {
+                    TextField("Search keys or literals", text: $viewModel.searchText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 320)
+
+                    Menu {
+                        ForEach(SearchScope.allCases) { scope in
+                            Button {
+                                viewModel.searchScope = scope
+                            } label: {
+                                Label(scope.label, systemImage: scope.icon)
+                                if viewModel.searchScope == scope {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    } label: {
+                        Label(viewModel.searchScope.label, systemImage: viewModel.searchScope.icon)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .padding(.horizontal, 2)
+                    .help("Search scope: \(viewModel.searchScope.label)")
+
+                    Toggle(isOn: $viewModel.searchMatchCase) {
+                        Text("Aa")
+                            .font(.system(.body, design: .monospaced).bold())
+                    }
+                    .toggleStyle(.button)
+                    .controlSize(.small)
+                    .buttonStyle(.bordered)
+                    .help(viewModel.searchMatchCase ? "Match case: on" : "Match case: off")
+
+                    Toggle(isOn: $viewModel.searchWholeWord) {
+                        Image(systemName: "textformat.abc.dottedunderline")
+                    }
+                    .toggleStyle(.button)
+                    .controlSize(.small)
+                    .buttonStyle(.bordered)
+                    .help(viewModel.searchWholeWord ? "Whole word: on" : "Whole word: off")
+
+                    Spacer(minLength: 0)
+                }
+
                 if showsLocalizationDetail {
-                    HStack {
+                    HStack(spacing: 12) {
                         AuditSummaryView(
                             errors: viewModel.issueSummary.errors,
                             warnings: viewModel.issueSummary.warnings,
@@ -182,13 +256,13 @@ struct ContentView: View {
                                 }
                             }
                             .pickerStyle(.segmented)
-                            .frame(maxWidth: 320)
+                            .frame(maxWidth: 260)
                         }
                     }
                 }
             }
-            .padding(.horizontal)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
         }
     }
 
@@ -329,48 +403,6 @@ struct ContentView: View {
             .help("Add a new language to your localization files")
 
             openLocalizableButton
-
-            Button(action: { viewModel.goBackToPreviousSelection() }) {
-                Label("Back", systemImage: "chevron.left")
-            }
-            .disabled(!viewModel.canGoBackInSelection)
-            .help("Go back to the previous selection")
-        }
-
-        ToolbarItemGroup(placement: .automatic) {
-            // Scope menu
-            Menu {
-                ForEach(SearchScope.allCases) { scope in
-                    Button {
-                        viewModel.searchScope = scope
-                    } label: {
-                        Label(scope.label, systemImage: scope.icon)
-                        if viewModel.searchScope == scope {
-                            Image(systemName: "checkmark")
-                        }
-                    }
-                }
-            } label: {
-                Label(viewModel.searchScope.label, systemImage: viewModel.searchScope.icon)
-            }
-            .help("Search scope: \(viewModel.searchScope.label)")
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-
-            // Match case toggle
-            Toggle(isOn: $viewModel.searchMatchCase) {
-                Text("Aa")
-                    .font(.system(.body, design: .monospaced).bold())
-            }
-            .toggleStyle(.button)
-            .help(viewModel.searchMatchCase ? "Match case: on" : "Match case: off")
-
-            // Whole word toggle
-            Toggle(isOn: $viewModel.searchWholeWord) {
-                Image(systemName: "textformat.abc.dottedunderline")
-            }
-            .toggleStyle(.button)
-            .help(viewModel.searchWholeWord ? "Whole word: on" : "Whole word: off")
         }
     }
 }

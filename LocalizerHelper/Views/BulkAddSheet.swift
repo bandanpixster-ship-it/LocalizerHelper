@@ -128,7 +128,7 @@ struct BulkAddSheet: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 6)
-            .background(translateMode == mode ? Color.accentColor.opacity(0.18) : Color.clear,
+            .background(translateMode == mode ? Color.accentColor.opacity(0.18) : Color.accentColor.opacity(0.0001),
                         in: RoundedRectangle(cornerRadius: 7))
         }
         .buttonStyle(.plain)
