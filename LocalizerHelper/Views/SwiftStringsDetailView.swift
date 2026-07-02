@@ -13,6 +13,7 @@ struct SwiftStringsDetailView: View {
     let pendingLiterals: [SwiftStringLiteral]
     let localizationFiles: [URL]
     let languages: [String]
+    let projectRoot: URL?
     let isKeyDuplicate: (String, URL) -> Bool
     let onAddLocalization: (String, URL, [String: String], String) -> Void
     let onBulkAdd: (_ items: [(key: String, translations: [String: String], comment: String)], _ file: URL, _ progress: @escaping (Int) -> Void) async -> Void
@@ -176,7 +177,7 @@ enum Filter: String, CaseIterable, Identifiable {
                     }
                     TableColumn("Line") { row in
                         Button {
-                            ProjectViewModel.openInXcode(row.literal.sourceFile, line: row.literal.lineNumber)
+                            ProjectViewModel.openInXcode(row.literal.sourceFile, projectRoot: projectRoot, line: row.literal.lineNumber)
                         } label: {
                             Text("\(row.literal.lineNumber)")
                                 .monospacedDigit()
@@ -298,7 +299,7 @@ enum Filter: String, CaseIterable, Identifiable {
             .help("Show in Finder")
 
             Button {
-                openInXcode(file)
+                ProjectViewModel.openInXcode(file, projectRoot: projectRoot)
             } label: {
                 Image(systemName: "hammer")
             }
@@ -312,7 +313,7 @@ enum Filter: String, CaseIterable, Identifiable {
     }
 
     private func openInXcode(_ file: URL) {
-        ProjectViewModel.openInXcode(file)
+        ProjectViewModel.openInXcode(file, projectRoot: projectRoot)
     }
 }
 

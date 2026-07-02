@@ -247,7 +247,7 @@ struct ContentView: View {
 
                     Button(action: {
                         if let url = viewModel.selectedNode?.url {
-                            ProjectViewModel.openInXcode(url)
+                            ProjectViewModel.openInXcode(url, projectRoot: viewModel.rootURL)
                         }
                     }) {
                         Label("Open in Xcode", systemImage: "hammer")
@@ -435,6 +435,7 @@ struct ContentView: View {
             pendingLiterals: viewModel.missingSwiftLiterals,
             localizationFiles: viewModel.localizationFiles,
             languages: viewModel.catalog.languages,
+            projectRoot: viewModel.rootURL,
             isKeyDuplicate: { key, fileURL in
                 viewModel.catalog.entries.contains { $0.sourceFile == fileURL && $0.key.key == key }
             },

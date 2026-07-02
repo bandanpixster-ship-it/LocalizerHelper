@@ -360,26 +360,60 @@ final class ProjectViewModel {
     /// project root, otherwise opens the root folder itself.
     func openProjectInXcode() {
         guard let rootURL else { return }
-        ProjectViewModel.openInXcode(xcodeProjectURL(in: rootURL) ?? rootURL)
+        ProjectViewModel.openInXcode(rootURL)
     }
 
-    static func openInXcode(_ url: URL, line: Int? = nil) {
-        if let line, FileManager.default.isExecutableFile(atPath: "/usr/bin/xed") {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/xed")
-            process.arguments = ["--line", "\(line)", url.path]
-            try? process.run()
-            return
-        }
+    /// Opens `url` in Xcode. If `url` is a directory (or doesn't itself resolve to a workspace/
+    /// project), resolves to its `.xcworkspace` / `.xcodeproj` — preferring workspace — searching
+    /// `url` first and falling back to `projectRoot` (e.g. when opening a subfolder that doesn't
+    /// contain the project file itself). If `url` is a file, this will attempt to open the project
+    /// together with the file so Xcode can show the file in the context of the project.
+    static func openInXcode(_ url: URL, projectRoot: URL? = nil, line: Int? = nil) {
+        let projectTarget = resolvedXcodeTarget(for: url, projectRoot: projectRoot)
+        let hasProjectTarget = projectTarget.pathExtension == "xcworkspace" || projectTarget.pathExtension == "xcodeproj"
+        let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+
+        let targetURL = projectTarget
+        let urlsToOpen: [URL] = {
+            if hasProjectTarget && !isDirectory {
+                return [targetURL, url]
+            }
+            return [targetURL]
+        }()
 
         if let xcodeURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.dt.Xcode") {
-            NSWorkspace.shared.open([url], withApplicationAt: xcodeURL, configuration: NSWorkspace.OpenConfiguration())
+            let configuration = NSWorkspace.OpenConfiguration()
+            if let line = line, !isDirectory {
+                configuration.arguments = ["--line", "\(line)"]
+            }
+            NSWorkspace.shared.open(urlsToOpen, withApplicationAt: xcodeURL, configuration: configuration)
         } else {
-            NSWorkspace.shared.open(url)
+            NSWorkspace.shared.open(targetURL)
         }
     }
 
-    private func xcodeProjectURL(in folder: URL) -> URL? {
+    private static func resolvedXcodeTarget(for url: URL, projectRoot: URL?) -> URL {
+        let projectExtensions: Set<String> = ["xcworkspace", "xcodeproj"]
+
+        if projectExtensions.contains(url.pathExtension) {
+            return url
+        }
+
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            if let found = xcodeProjectURL(in: url) { return found }
+            if let projectRoot, projectRoot != url, let found = xcodeProjectURL(in: projectRoot) { return found }
+            return projectRoot ?? url
+        }
+
+        let containingFolder = url.deletingLastPathComponent()
+        if let found = xcodeProjectURL(in: containingFolder) { return found }
+        if let projectRoot, let found = xcodeProjectURL(in: projectRoot) { return found }
+
+        return projectRoot ?? url
+    }
+
+    private static func xcodeProjectURL(in folder: URL) -> URL? {
         guard let contents = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { return nil }
         if let workspace = contents.first(where: { $0.pathExtension == "xcworkspace" }) { return workspace }
         if let project = contents.first(where: { $0.pathExtension == "xcodeproj" }) { return project }
