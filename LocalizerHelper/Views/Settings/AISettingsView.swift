@@ -42,6 +42,7 @@ struct AISettingsView: View {
         var isFetching = false
         var fetchError: String?
         var testState: TestState = .idle
+        var urlValidationError: String?
     }
 
     private let cloudProviders: [AIProvider] = [.claude, .openAI, .gemini]
@@ -116,17 +117,30 @@ struct AISettingsView: View {
                     Text("Base URL")
                         .frame(width: 70, alignment: .leading)
                         .foregroundStyle(.secondary)
-                    TextField(provider.defaultBaseURL, text: state.baseURLDraft)
+                    TextField(provider.defaultBaseURL, text: Binding(
+                        get: { state.wrappedValue.baseURLDraft },
+                        set: {
+                            state.wrappedValue.baseURLDraft = $0
+                            validateURL($0, state: state)
+                        }
+                    ))
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
                         .onSubmit { saveBaseURL(for: provider, state: state) }
                     Button("Save") { saveBaseURL(for: provider, state: state) }
                         .disabled(
                             state.wrappedValue.baseURLDraft == settings.baseURL(for: provider) ||
-                            state.wrappedValue.baseURLDraft.isEmpty
+                            state.wrappedValue.baseURLDraft.isEmpty ||
+                            state.wrappedValue.urlValidationError != nil
                         )
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
+                }
+
+                if let error = state.wrappedValue.urlValidationError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 }
 
                 Divider()
@@ -297,6 +311,35 @@ struct AISettingsView: View {
         settings.setBaseURL(state.wrappedValue.baseURLDraft, for: provider)
         localState[provider]?.models = []
         fetchModels(for: provider)
+    }
+
+    private func validateURL(_ urlString: String, state: Binding<LocalProviderState>) {
+        // Empty URL is valid (will use default)
+        guard !urlString.isEmpty else {
+            state.wrappedValue.urlValidationError = nil
+            return
+        }
+
+        // Check if it's a valid URL
+        guard let url = URL(string: urlString) else {
+            state.wrappedValue.urlValidationError = "Invalid URL format"
+            return
+        }
+
+        // Check scheme
+        guard url.scheme == "http" || url.scheme == "https" else {
+            state.wrappedValue.urlValidationError = "URL must use http:// or https://"
+            return
+        }
+
+        // Check host
+        guard url.host != nil else {
+            state.wrappedValue.urlValidationError = "URL must include a host"
+            return
+        }
+
+        // Clear error if validation passes
+        state.wrappedValue.urlValidationError = nil
     }
 
     private func testLocalProvider(_ provider: AIProvider, state: Binding<LocalProviderState>) {

@@ -53,6 +53,14 @@ nonisolated enum BulkTranslateProgress: Equatable {
 @MainActor
 @Observable
 final class ProjectViewModel {
+    private struct WorkItem {
+        let key: LocalizationKey
+        let language: String
+        let file: URL
+        let sourceText: String
+        let comment: String?
+    }
+
     var rootURL: URL?
     var rootNode: FileNode?
     var selectedNode: FileNode?
@@ -77,6 +85,8 @@ final class ProjectViewModel {
     private var scanTask: Task<Void, Never>?
     private var auditTask: Task<Void, Never>?
     private var bulkTranslateTask: Task<Void, Never>?
+    private var searchDebounceTask: Task<Void, Never>?
+    private var debouncedSearchText = ""
     @ObservationIgnored private var cachedWholeWordRegex: NSRegularExpression?
     @ObservationIgnored private var cachedWholeWordRegexKey: RegexCacheKey?
     private var ignoreStoreCancellable: AnyCancellable?
@@ -123,7 +133,7 @@ final class ProjectViewModel {
         let scopedKeys = Set(scopedEntries.map(\.key))
         var results = auditResults.filter { scopedKeys.contains($0.key) }
 
-        if !searchText.isEmpty {
+        if !debouncedSearchText.isEmpty {
             let entriesByKey = catalog.entriesByKey
             results = results.filter { result in
                 switch searchScope {
@@ -159,7 +169,7 @@ final class ProjectViewModel {
     }
 
     var filteredSwiftLiterals: [SwiftStringLiteral] {
-        guard !searchText.isEmpty else { return swiftLiterals }
+        guard !debouncedSearchText.isEmpty else { return swiftLiterals }
         return swiftLiterals.filter {
             searchMatches(in: $0.displayPattern) || searchMatches(in: $0.raw)
         }
@@ -180,23 +190,43 @@ final class ProjectViewModel {
 
     // MARK: - Search helpers
 
+    private func updateSearchText(_ newText: String) {
+        searchText = newText
+
+        // Cancel any pending debounce task
+        searchDebounceTask?.cancel()
+
+        // If empty, update immediately
+        if newText.isEmpty {
+            debouncedSearchText = ""
+            return
+        }
+
+        // Schedule debounced update
+        searchDebounceTask = Task {
+            try? await Task.sleep(nanoseconds: 350_000_000) // 350ms debounce
+            guard !Task.isCancelled else { return }
+            debouncedSearchText = newText
+        }
+    }
+
     private func searchMatches(in text: String) -> Bool {
-        guard !searchText.isEmpty else { return true }
+        guard !debouncedSearchText.isEmpty else { return true }
         if searchWholeWord {
             guard let regex = wholeWordRegex() else { return false }
             return regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
         } else {
             let compareOptions: String.CompareOptions = searchMatchCase ? [] : [.caseInsensitive]
-            return text.range(of: searchText, options: compareOptions) != nil
+            return text.range(of: debouncedSearchText, options: compareOptions) != nil
         }
     }
 
     private func wholeWordRegex() -> NSRegularExpression? {
-        let cacheKey = RegexCacheKey(searchText: searchText, matchCase: searchMatchCase)
+        let cacheKey = RegexCacheKey(searchText: debouncedSearchText, matchCase: searchMatchCase)
         if cachedWholeWordRegexKey == cacheKey {
             return cachedWholeWordRegex
         }
-        let escaped = NSRegularExpression.escapedPattern(for: searchText)
+        let escaped = NSRegularExpression.escapedPattern(for: debouncedSearchText)
         let pattern = "\\b\(escaped)\\b"
         var options: NSRegularExpression.Options = [.useUnicodeWordBoundaries]
         if !searchMatchCase { options.insert(.caseInsensitive) }
@@ -650,29 +680,7 @@ final class ProjectViewModel {
     }
 
     private func runBulkTranslation(onlyMissing: Bool) async {
-        struct WorkItem {
-            let key: LocalizationKey
-            let language: String
-            let file: URL
-            let sourceText: String
-            let comment: String?
-        }
-
-        let scope = filteredAuditResults
-        let languages = catalog.languages.filter { $0 != "en" }
-        guard !scope.isEmpty, !languages.isEmpty else { return }
-
-        let store = GlobalIgnoreStore.shared
-        var work: [WorkItem] = []
-        for result in scope {
-            for language in languages {
-                guard let file = sourceFileURL(for: result.key, language: language) else { continue }
-                guard !store.isIgnored(key: result.key.key, language: language) else { continue }
-                let existing = result.translations[language] ?? ""
-                if onlyMissing && !existing.isEmpty { continue }
-                work.append(WorkItem(key: result.key, language: language, file: file, sourceText: result.englishValue, comment: result.comment))
-            }
-        }
+        let work = buildWorkQueue(onlyMissing: onlyMissing)
         guard !work.isEmpty else { return }
 
         let total = work.count
@@ -687,9 +695,44 @@ final class ProjectViewModel {
         }
         defer { progressPoll.cancel() }
 
-        // Bounded concurrency: translate a handful of strings at a time rather than either
-        // serially (slow) or all-at-once (hammers free translation APIs into rate limits).
-        let chunkSize = 6
+        await processTranslationChunks(
+            work: work,
+            chunkSize: 6,
+            accumulator: accumulator,
+            completedCounter: completedCounter,
+            failedCounter: failedCounter
+        )
+
+        await finalizeTranslation(accumulator: accumulator)
+        bulkTranslateProgress = .idle
+    }
+
+    private func buildWorkQueue(onlyMissing: Bool) -> [WorkItem] {
+        let scope = filteredAuditResults
+        let languages = catalog.languages.filter { $0 != "en" }
+        guard !scope.isEmpty, !languages.isEmpty else { return [] }
+
+        let store = GlobalIgnoreStore.shared
+        var work: [WorkItem] = []
+        for result in scope {
+            for language in languages {
+                guard let file = sourceFileURL(for: result.key, language: language) else { continue }
+                guard !store.isIgnored(key: result.key.key, language: language) else { continue }
+                let existing = result.translations[language] ?? ""
+                if onlyMissing && !existing.isEmpty { continue }
+                work.append(WorkItem(key: result.key, language: language, file: file, sourceText: result.englishValue, comment: result.comment))
+            }
+        }
+        return work
+    }
+
+    private func processTranslationChunks(
+        work: [WorkItem],
+        chunkSize: Int,
+        accumulator: BulkTranslationAccumulator,
+        completedCounter: ScanProgressCounter,
+        failedCounter: ScanProgressCounter
+    ) async {
         var index = 0
         while index < work.count {
             if Task.isCancelled { break }
@@ -723,7 +766,9 @@ final class ProjectViewModel {
             }
             index = end
         }
+    }
 
+    private func finalizeTranslation(accumulator: BulkTranslationAccumulator) async {
         // Always flush whatever succeeded, even if the run was cancelled partway through —
         // nothing completed should be silently lost.
         let remaining = await accumulator.flushAll(fileUpdater: fileUpdater)
@@ -731,8 +776,6 @@ final class ProjectViewModel {
             for file in remaining { refreshCatalogEntries(for: file) }
             refreshAudit()
         }
-
-        bulkTranslateProgress = .idle
     }
 
     var localizationFiles: [URL] {

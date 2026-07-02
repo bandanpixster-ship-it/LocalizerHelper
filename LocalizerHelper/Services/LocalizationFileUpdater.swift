@@ -425,7 +425,7 @@ nonisolated struct LocalizationFileUpdater: Sendable {
     private func replaceStringsValue(in content: String, key: String, newValue: String) -> String? {
         logger.debug("Searching for .strings key: \(key, privacy: .public)")
         let escapedKey = NSRegularExpression.escapedPattern(for: key)
-        let pattern = #"(?m)^([ \t]*)"# + escapedKey + #""[ \t]*=[ \t]*"((?:\.|[^\"\])*)"[ \t]*;(.*)$"#
+        let pattern = #"(?m)^([ \t]*)"# + escapedKey + #""[ \t]*=[ \t]*"((?:\.|[^\"\\])*)"[ \t]*;(.*)$"#
 
         logger.debug("Pattern: \(pattern, privacy: .public)")
 

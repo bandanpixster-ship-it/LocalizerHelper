@@ -4,7 +4,7 @@
 
 ## Implementation progress
 
-> **Last updated:** 2026-06-30 — Phases 0–7 fully implemented, including AI translation, menu commands, and settings.
+> **Last updated:** 2026-07-02 — Phases 0–7 fully implemented, including AI translation, menu commands, and settings. Bug fixes in progress.
 
 | Phase | Status | Notes |
 |-------|--------|-------|
@@ -16,6 +16,7 @@
 | 5 Polish | Done | Background scan + cancel on re-open; recent projects auto-open on launch |
 | 6 AI & Translation | Done | 6 AI providers + 3 free fallbacks; batch translation; comment generation; bulk import |
 | 7 Menu Commands & Settings | Done | `AppCommands` (File + View menus); Settings window (AI config, ignored keys) |
+| 8 Bug Fixes | In Progress | Fixing critical bugs and code quality issues (see section 14) |
 
 **Build note:** Project uses `PBXFileSystemSynchronizedRootGroup` — new files under `LocalizerHelper/` are picked up automatically by Xcode.
 
@@ -501,6 +502,33 @@ LocalizerHelper/
 | **Language list** | Discovered dynamically from `.lproj` folders and xcstrings localizations |
 | **API key storage** | Keychain (`SecItemAdd` / `SecItemCopyMatching`) |
 | **Menu bridge** | `FocusedValues` + `@FocusedValue` in `Commands` struct |
+
+---
+
+## 14. Bug fixes in progress (2026-07-02)
+
+### Critical fixes (High Priority)
+
+| # | Issue | File | Status |
+|---|-------|------|--------|
+| 1 | Regex bug in replaceStringsValue() - character class `[^\"\]` should be `[^\"\\]` | LocalizationFileUpdater.swift:428 | ✅ Done |
+| 2 | Replace print() statements with proper Logger calls | Multiple files | ✅ Done |
+| 3 | Race condition in TranslationService.test() - mutates shared settings | TranslationService.swift:48-60 | ✅ Done |
+
+### Code quality improvements (Medium Priority)
+
+| # | Issue | File | Status |
+|---|-------|------|--------|
+| 4 | Add keyboard shortcuts (Cmd+O, Cmd+R, Cmd+F, etc.) | ContentView.swift | ✅ Done |
+| 5 | Implement search debouncing (300-500ms) | ProjectViewModel.swift | ✅ Done |
+| 6 | Add URL validation for local server addresses | AISettingsView.swift | ✅ Done |
+| 7 | Standardize error display across the app | Multiple files | Pending |
+
+### Code quality improvements (Low Priority)
+
+| # | Issue | File | Status |
+|---|-------|------|--------|
+| 8 | Extract long runBulkTranslation() method (84 lines) | ProjectViewModel.swift:652-736 | ✅ Done |
 
 ---
 

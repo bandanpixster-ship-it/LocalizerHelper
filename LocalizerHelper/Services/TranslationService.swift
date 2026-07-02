@@ -45,18 +45,33 @@ nonisolated struct TranslationService: Sendable {
 
     // MARK: - Provider test (used by Settings UI to validate a key before saving)
 
+    private static let testLock = NSLock()
+
     func test(provider: AIProvider, apiKey: String) async throws {
-        // Temporarily stash the key, run one real translation, restore original.
-        let original = AISettings.shared.key(for: provider)
-        let originalProvider = AISettings.shared.preferredProvider
-        AISettings.shared.setKey(apiKey, for: provider)
-        AISettings.shared.preferredProvider = provider
-        defer {
-            AISettings.shared.setKey(original, for: provider)
-            AISettings.shared.preferredProvider = originalProvider
+        // Use a lock to prevent concurrent test calls from interfering with each other
+        return try await withCheckedThrowingContinuation { continuation in
+            Self.testLock.lock()
+            defer { Self.testLock.unlock() }
+
+            Task {
+                do {
+                    // Temporarily stash the key, run one real translation, restore original.
+                    let original = AISettings.shared.key(for: provider)
+                    let originalProvider = AISettings.shared.preferredProvider
+                    AISettings.shared.setKey(apiKey, for: provider)
+                    AISettings.shared.preferredProvider = provider
+                    defer {
+                        AISettings.shared.setKey(original, for: provider)
+                        AISettings.shared.preferredProvider = originalProvider
+                    }
+                    let result = try await translateViaAI(text: "Hello", comment: "Settings test", key: "test", to: "fr")
+                    guard !result.isEmpty else { throw TranslationError.unexpectedResponse }
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
         }
-        let result = try await translateViaAI(text: "Hello", comment: "Settings test", key: "test", to: "fr")
-        guard !result.isEmpty else { throw TranslationError.unexpectedResponse }
     }
 
     // MARK: - Batch AI translation (single call → all languages)
@@ -183,7 +198,6 @@ nonisolated struct TranslationService: Sendable {
               let message = choices.first?["message"] as? [String: Any],
               let text = message["content"] as? String else {
             Self.logger.error("[LocalServer] unexpected response: \(rawBody, privacy: .public)")
-            print("[LocalServer] unexpected response: \(rawBody)")
             throw TranslationError.unexpectedResponse
         }
         return text

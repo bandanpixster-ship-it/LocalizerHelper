@@ -16,6 +16,7 @@ struct ContentView: View {
     @State private var showTranslateAllConfirmation = false
     @State private var initialProjectURL: URL?
     @State private var autoOpenLastProject: Bool
+    @FocusState private var isSearchFieldFocused: Bool
 
     init(initialProjectURL: URL? = nil, autoOpenLastProject: Bool = true) {
         _viewModel = State(initialValue: ProjectViewModel())
@@ -36,6 +37,7 @@ struct ContentView: View {
                 WindowCoordinator.shared.openProjectWindow(with: projectURL)
             }
         })
+        .focusedSceneValue(\.focusSearchFieldAction, { isSearchFieldFocused = true })
         .navigationTitle(windowTitle)
         .navigationSplitViewStyle(.balanced)
         .toolbar { toolbarContent }
@@ -240,9 +242,13 @@ struct ContentView: View {
                 }
 
                 HStack(spacing: 10) {
-                    TextField("Search keys or literals", text: $viewModel.searchText)
+                    TextField("Search keys or literals", text: Binding(
+                        get: { viewModel.searchText },
+                        set: { viewModel.updateSearchText($0) }
+                    ))
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 360)
+                        .focused($isSearchFieldFocused)
 
                     Menu {
                         ForEach(SearchScope.allCases) { scope in

@@ -7,6 +7,7 @@
 
 
 import SwiftUI
+import os.log
 
 struct LocalizationDetailView: View {
     let results: [KeyAuditResult]
@@ -273,7 +274,7 @@ struct LocalizationDetailView: View {
                     isTranslating = false
                 }
             } catch {
-                print("[Translate \(lang)] failed: \(error.localizedDescription)")
+                os_log("[Translate \(lang)] failed: %{public}@", log: .default, type: .error, error.localizedDescription)
                 await MainActor.run {
                     isTranslating = false
                     translateError = error.localizedDescription
@@ -316,13 +317,14 @@ struct LocalizationDetailView: View {
         let sourceText = editValues["en"] ?? key.key
         let commentOverride = editComment.isEmpty ? nil : editComment
 
-        print("[AI Translate] key=\(key.key) sourceText=\(sourceText) comment=\(commentOverride ?? "nil") targets=\(targets)")
+        os_log("[AI Translate] key=%{public}@ sourceText=%{public}@ comment=%{public}@ targets=%{public}@",
+               log: .default, type: .debug, key.key, sourceText, commentOverride ?? "nil", targets.joined(separator: ","))
 
         isTranslating = true
         Task {
             do {
                 let results = try await onAITranslateBatch(key.key, sourceText, commentOverride, targets)
-                print("[AI Translate] success — received \(results.count) translations")
+                os_log("[AI Translate] success — received %d translations", log: .default, type: .debug, results.count)
                 await MainActor.run {
                     if results.isEmpty {
                         translateError = "AI translation returned no results. Check your provider settings or try again."
@@ -334,7 +336,7 @@ struct LocalizationDetailView: View {
                     isTranslating = false
                 }
             } catch {
-                print("[AI Translate] failed: \(error.localizedDescription)")
+                os_log("[AI Translate] failed: %{public}@", log: .default, type: .error, error.localizedDescription)
                 await MainActor.run {
                     isTranslating = false
                     translateError = error.localizedDescription

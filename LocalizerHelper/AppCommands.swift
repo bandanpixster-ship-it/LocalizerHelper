@@ -11,6 +11,7 @@ extension FocusedValues {
     @Entry var projectViewModel: ProjectViewModel? = nil
     @Entry var showAddLanguageAction: (() -> Void)? = nil
     @Entry var openProjectInNewWindowAction: (() -> Void)? = nil
+    @Entry var focusSearchFieldAction: (() -> Void)? = nil
 }
 
 // MARK: - Menu commands
@@ -18,10 +19,17 @@ struct AppCommands: Commands {
     @FocusedValue(\.projectViewModel) private var viewModel: ProjectViewModel?
     @FocusedValue(\.showAddLanguageAction) private var showAddLanguage: (() -> Void)?
     @FocusedValue(\.openProjectInNewWindowAction) private var openProjectInNewWindow: (() -> Void)?
+    @FocusedValue(\.focusSearchFieldAction) private var focusSearchField: (() -> Void)?
 
     var body: some Commands {
         fileMenuCommands
         viewMenuCommands
+        CommandMenu("Edit") {
+            Button("Find…") {
+                focusSearchField?()
+            }
+            .keyboardShortcut("f", modifiers: .command)
+        }
     }
 
     // MARK: File menu
