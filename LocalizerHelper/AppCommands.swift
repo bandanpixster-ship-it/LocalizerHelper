@@ -32,6 +32,7 @@ struct AppCommands: Commands {
                 viewModel?.openProject()
             }
             .keyboardShortcut("o", modifiers: .command)
+            .disabled(viewModel?.isScanning == true)
 
             Button("Open Project in New Window…") {
                 openProjectInNewWindow?()
@@ -42,7 +43,7 @@ struct AppCommands: Commands {
                 viewModel?.refreshProject()
             }
             .keyboardShortcut("r", modifiers: .command)
-            .disabled(viewModel?.rootURL == nil || viewModel?.isScanning == true)
+            .disabled(viewModel?.rootURL == nil || viewModel?.isScanning == true || viewModel?.isBulkTranslating == true)
         }
     }
 
@@ -51,6 +52,8 @@ struct AppCommands: Commands {
     private var viewMenuCommands: some Commands {
         CommandMenu("Localization") {
             let canUseLocalizationActions = viewModel?.selectedNode?.fileKind == .strings || viewModel?.selectedNode?.fileKind == .xcstrings
+
+            let isScanning = viewModel?.isScanning == true
 
             // Jump to localization file(s)
             let files = viewModel?.localizationFiles ?? []
@@ -62,6 +65,7 @@ struct AppCommands: Commands {
                     viewModel?.selectLocalizationFile(files[0])
                 }
                 .keyboardShortcut("l", modifiers: .command)
+                .disabled(isScanning)
             } else {
                 Menu("View Localization File") {
                     ForEach(files, id: \.self) { file in
@@ -70,12 +74,13 @@ struct AppCommands: Commands {
                         }
                     }
                 }
+                .disabled(isScanning)
             }
 
             Button("Add Language…") {
                 showAddLanguage?()
             }
-            .disabled(viewModel?.localizationFiles.isEmpty ?? true)
+            .disabled((viewModel?.localizationFiles.isEmpty ?? true) || isScanning)
 
             Divider()
 
@@ -84,31 +89,31 @@ struct AppCommands: Commands {
                 viewModel?.detailFilter = .all
             }
             .keyboardShortcut("1", modifiers: .command)
-            .disabled(!canUseLocalizationActions)
+            .disabled(!canUseLocalizationActions || isScanning)
 
             Button("Show Errors Only") {
                 viewModel?.detailFilter = .errors
             }
             .keyboardShortcut("2", modifiers: .command)
-            .disabled(!canUseLocalizationActions)
+            .disabled(!canUseLocalizationActions || isScanning)
 
             Button("Show Warnings Only") {
                 viewModel?.detailFilter = .warnings
             }
             .keyboardShortcut("3", modifiers: .command)
-            .disabled(!canUseLocalizationActions)
+            .disabled(!canUseLocalizationActions || isScanning)
 
             Button("Show Ignored Only") {
                 viewModel?.detailFilter = .ignored
             }
             .keyboardShortcut("4", modifiers: .command)
-            .disabled(!canUseLocalizationActions)
+            .disabled(!canUseLocalizationActions || isScanning)
 
             Button("Show AI Ready Only") {
                 viewModel?.detailFilter = .aiReady
             }
             .keyboardShortcut("5", modifiers: .command)
-            .disabled(!canUseLocalizationActions)
+            .disabled(!canUseLocalizationActions || isScanning)
         }
     }
 }

@@ -8,7 +8,7 @@
 
 import Foundation
 
-struct XCStringsParser: Sendable {
+nonisolated struct XCStringsParser: Sendable {
     func parse(fileURL: URL) throws -> [LocalizationEntry] {
         let data = try Data(contentsOf: fileURL)
         let document = try JSONDecoder().decode(XCStringsDocument.self, from: data)
@@ -45,20 +45,20 @@ struct XCStringsParser: Sendable {
     }
 }
 
-private struct XCStringsDocument: Decodable {
+private nonisolated struct XCStringsDocument: Decodable {
     let sourceLanguage: String?
     let strings: [String: XCStringsEntry]
 }
 
-private struct XCStringsEntry: Decodable {
+private nonisolated struct XCStringsEntry: Decodable {
     let comment: String?
     let localizations: [String: XCStringsLocalization]?
 }
 
-private struct XCStringsLocalization: Decodable {
+private nonisolated struct XCStringsLocalization: Decodable {
     let stringUnit: XCStringsStringUnit?
 }
 
-private struct XCStringsStringUnit: Decodable {
+private nonisolated struct XCStringsStringUnit: Decodable {
     let value: String
 }

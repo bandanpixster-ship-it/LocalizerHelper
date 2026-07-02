@@ -22,7 +22,7 @@ enum AuditRuleID: String, Hashable {
     case duplicateAcrossFiles = "duplicate_across_files"
 }
 
-struct AuditIssue: Identifiable, Hashable {
+nonisolated struct AuditIssue: Identifiable, Hashable {
     let id: UUID
     let ruleID: AuditRuleID
     let severity: AuditSeverity
@@ -50,7 +50,7 @@ struct AuditIssue: Identifiable, Hashable {
     }
 }
 
-struct KeyAuditResult: Identifiable, Hashable {
+nonisolated struct KeyAuditResult: Identifiable, Hashable {
     let id: UUID
     let key: LocalizationKey
     let englishValue: String

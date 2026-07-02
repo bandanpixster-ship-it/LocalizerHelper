@@ -8,12 +8,12 @@
 
 import Foundation
 
-struct LocalizationKey: Hashable, Codable {
+nonisolated struct LocalizationKey: Hashable, Codable {
     let key: String
     let tableName: String
 }
 
-struct LocalizationEntry: Identifiable, Hashable {
+nonisolated struct LocalizationEntry: Identifiable, Hashable {
     let id: UUID
     let key: LocalizationKey
     let language: String
@@ -38,7 +38,7 @@ struct LocalizationEntry: Identifiable, Hashable {
     }
 }
 
-struct LocalizationCatalog {
+nonisolated struct LocalizationCatalog {
     var entries: [LocalizationEntry]
 
     init(entries: [LocalizationEntry] = []) {
@@ -86,40 +86,49 @@ struct LocalizationCatalog {
     }
 }
 
-extension LocalizationCatalog {
-    static func build(from root: FileNode, parsers: LocalizationParsers = .init()) -> LocalizationCatalog {
-        var allEntries: [LocalizationEntry] = []
-        collectEntries(from: root, into: &allEntries, parsers: parsers)
+nonisolated extension LocalizationCatalog {
+    // Each localization file is parsed independently, so files are parsed concurrently
+    // via a task group rather than one at a time — this is the CPU/IO-bound step for
+    // large projects (many .strings/.xcstrings files) and parallelizes cleanly.
+    static func build(from root: FileNode, parsers: LocalizationParsers = .init(), progress: ScanProgressCounter? = nil) async -> LocalizationCatalog {
+        let files = localizationFileNodes(in: root)
+
+        let allEntries = await withTaskGroup(of: [LocalizationEntry].self) { group in
+            for file in files {
+                group.addTask {
+                    defer { progress?.increment() }
+                    switch file.fileKind {
+                    case .strings:
+                        return (try? parsers.strings.parse(file.url)) ?? []
+                    case .xcstrings:
+                        return (try? parsers.xcstrings.parse(fileURL: file.url)) ?? []
+                    default:
+                        return []
+                    }
+                }
+            }
+            var all: [LocalizationEntry] = []
+            for await batch in group {
+                all.append(contentsOf: batch)
+            }
+            return all
+        }
+
         return LocalizationCatalog(entries: allEntries)
     }
 
-    private static func collectEntries(
-        from node: FileNode,
-        into entries: inout [LocalizationEntry],
-        parsers: LocalizationParsers
-    ) {
+    static func localizationFileNodes(in node: FileNode) -> [FileNode] {
         if !node.isDirectory {
             switch node.fileKind {
-            case .strings:
-                if let parsed = try? parsers.strings.parse(node.url) {
-                    entries.append(contentsOf: parsed)
-                }
-            case .xcstrings:
-                if let parsed = try? parsers.xcstrings.parse(fileURL: node.url) {
-                    entries.append(contentsOf: parsed)
-                }
-            default:
-                break
+            case .strings, .xcstrings: return [node]
+            default: return []
             }
-            return
         }
-        for child in node.children {
-            collectEntries(from: child, into: &entries, parsers: parsers)
-        }
+        return node.children.flatMap { localizationFileNodes(in: $0) }
     }
 }
 
-struct LocalizationParsers: Sendable {
+nonisolated struct LocalizationParsers: Sendable {
     var strings: StringsParser = StringsParser()
     var xcstrings: XCStringsParser = XCStringsParser()
 }

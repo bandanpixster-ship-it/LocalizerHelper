@@ -9,7 +9,7 @@
 import Foundation
 import os.log
 
-struct TranslationService {
+nonisolated struct TranslationService: Sendable {
     private static let logger = Logger(subsystem: "com.LocalizerHelper.TranslationService", category: "Translation")
     static let shared = TranslationService()
 
@@ -84,8 +84,17 @@ struct TranslationService {
         }
 
         let (protected, placeholders) = protectPlaceholders(text)
-        let normalizedLanguages = languages.map { normalizedLanguageCode($0) }
-        let langList = normalizedLanguages.joined(separator: ", ")
+
+        // Apple locale codes and the codes translation providers expect don't always match
+        // (e.g. Apple's "zh-Hans" vs. the "zh-CN" this app's AI prompts/free-chain providers use).
+        // We ask the AI to key its response by the *normalized* code, then map back to whichever
+        // original caller-supplied code(s) share that normalized form, so results always land
+        // under the language code the rest of the app (and the catalog) actually uses.
+        var normalizedToOriginals: [String: [String]] = [:]
+        for language in languages {
+            normalizedToOriginals[normalizedLanguageCode(language), default: []].append(language)
+        }
+        let normalizedLanguages = Array(normalizedToOriginals.keys)
 
         let hasPlaceholders = protected.contains("__PH")
         var systemPrompt = "You are a professional iOS/macOS app localizer. Return ONLY valid JSON — no markdown, no code fences, no explanation."
@@ -103,8 +112,15 @@ struct TranslationService {
         let raw = try await batchAIRequest(system: systemPrompt, user: userPrompt)
         let parsed = try parseJSONTranslations(raw)
 
-        // Restore placeholders in every translated value.
-        return parsed.mapValues { restorePlaceholders($0, placeholders: placeholders) }
+        // Restore placeholders and fan each normalized-code translation back out to every
+        // original code that shares it (e.g. both es-MX and es-ES get the same "es" result).
+        var result: [String: String] = [:]
+        for (normalizedCode, value) in parsed {
+            guard let originals = normalizedToOriginals[normalizedCode] else { continue }
+            let restored = restorePlaceholders(value, placeholders: placeholders)
+            for original in originals { result[original] = restored }
+        }
+        return result
     }
 
     private func batchAIRequest(system: String, user: String) async throws -> String {
@@ -692,7 +708,7 @@ struct TranslationService {
 
 // MARK: - Errors
 
-enum TranslationError: LocalizedError {
+nonisolated enum TranslationError: LocalizedError {
     case invalidURL
     case httpError(Int)
     case unexpectedResponse
@@ -707,7 +723,7 @@ enum TranslationError: LocalizedError {
             return "Could not construct translation request URL."
         case .httpError(let code):
             if code == 429 {
-                return "Rate limit reached (HTTP 429). Wait a moment and try again. Gemini free tier allows ~15 requests/min."
+                return "Rate limit reached (HTTP 429). Wait a moment and try again. Free tier has limited access."
             }
             return "Translation service returned HTTP \(code)."
         case .unexpectedResponse:

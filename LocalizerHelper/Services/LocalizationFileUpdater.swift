@@ -9,7 +9,7 @@
 import Foundation
 import os.log
 
-struct LocalizationFileUpdater {
+nonisolated struct LocalizationFileUpdater: Sendable {
     enum UpdateError: LocalizedError {
         case unsupportedFileType
         case keyNotFound(key: String)
@@ -71,18 +71,75 @@ struct LocalizationFileUpdater {
         logger.info("Successfully updated translation for key=\(key, privacy: .public) in language=\(language, privacy: .public)")
     }
 
+    /// Applies many key/language translations to a single file with exactly one read + one write,
+    /// instead of one read+write per translation (which is expensive — a `.xcstrings` file holds
+    /// every key/language in one JSON document — and unsafe to call concurrently per-key against
+    /// the same file, since each call reads-modifies-writes the whole file independently).
+    func applyBulkUpdates(to fileURL: URL, updates: [(key: String, language: String, value: String)]) throws {
+        guard !updates.isEmpty else { return }
+
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            throw UpdateError.fileNotFound(path: fileURL.path)
+        }
+        guard fileManager.isWritableFile(atPath: fileURL.path) else {
+            throw UpdateError.fileAccessDenied(path: fileURL.path)
+        }
+
+        switch fileURL.pathExtension.lowercased() {
+        case "strings":
+            var content = try String(contentsOf: fileURL, encoding: .utf8)
+            for update in updates {
+                if let replaced = replaceStringsValue(in: content, key: update.key, newValue: update.value) {
+                    content = replaced
+                }
+            }
+            try write(content: content, to: fileURL)
+        case "xcstrings":
+            let data = try Data(contentsOf: fileURL)
+            guard var json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  var strings = json["strings"] as? [String: Any] else {
+                throw UpdateError.invalidFileContents(reason: "Failed to parse JSON structure of .xcstrings file.")
+            }
+            for update in updates {
+                guard var entry = strings[update.key] as? [String: Any] else { continue }
+                var localizations = entry["localizations"] as? [String: Any] ?? [:]
+                localizations[update.language] = ["stringUnit": ["state": "translated", "value": update.value]]
+                entry["localizations"] = localizations
+                strings[update.key] = entry
+            }
+            json["strings"] = strings
+            let outputData = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+            try outputData.write(to: fileURL, options: .atomic)
+        default:
+            throw UpdateError.unsupportedFileType
+        }
+
+        logger.info("Applied \(updates.count, privacy: .public) bulk translation updates to \(fileURL.lastPathComponent, privacy: .public)")
+    }
+
     func addLanguage(code: String, to fileURL: URL) throws {
+        try addLanguages(codes: [code], to: fileURL)
+    }
+
+    /// Adds several languages in one call. For `.xcstrings` this means a single read-modify-write
+    /// of the whole JSON document instead of one per language; for `.strings` each language still
+    /// gets its own `.lproj` folder, but that's cheap since they're independent files.
+    func addLanguages(codes: [String], to fileURL: URL) throws {
+        guard !codes.isEmpty else { return }
         switch fileURL.pathExtension.lowercased() {
         case "xcstrings":
-            try addLanguageToXCStrings(code: code, fileURL: fileURL)
+            try addLanguagesToXCStrings(codes: codes, fileURL: fileURL)
         case "strings":
-            try addLanguageToStringsFolder(code: code, templateFileURL: fileURL)
+            for code in codes {
+                try addLanguageToStringsFolder(code: code, templateFileURL: fileURL)
+            }
         default:
             throw UpdateError.unsupportedFileType
         }
     }
 
-    private func addLanguageToXCStrings(code: String, fileURL: URL) throws {
+    private func addLanguagesToXCStrings(codes: [String], fileURL: URL) throws {
         let data = try Data(contentsOf: fileURL)
         guard var json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw UpdateError.invalidFileContents(reason: "Failed to parse .xcstrings JSON.")
@@ -91,8 +148,9 @@ struct LocalizationFileUpdater {
         for key in strings.keys {
             guard var entry = strings[key] as? [String: Any] else { continue }
             var localizations = entry["localizations"] as? [String: Any] ?? [:]
-            guard localizations[code] == nil else { continue }
-            localizations[code] = ["stringUnit": ["state": "new", "value": ""]]
+            for code in codes where localizations[code] == nil {
+                localizations[code] = ["stringUnit": ["state": "new", "value": ""]]
+            }
             entry["localizations"] = localizations
             strings[key] = entry
         }
@@ -206,7 +264,7 @@ struct LocalizationFileUpdater {
     private func updateStringsFile(fileURL: URL, key: String, newValue: String) throws {
         logger.debug("Updating .strings file: \(fileURL.path, privacy: .public)")
         do {
-            var content = try String(contentsOf: fileURL, encoding: .utf8)
+            let content = try String(contentsOf: fileURL, encoding: .utf8)
             logger.debug("Read file successfully, length: \(content.count, privacy: .public) characters")
 
             guard let updated = replaceStringsValue(in: content, key: key, newValue: newValue) else {

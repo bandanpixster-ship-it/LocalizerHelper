@@ -8,7 +8,7 @@
 
 import Foundation
 
-struct SwiftStringExtractor: Sendable {
+nonisolated struct SwiftStringExtractor: Sendable {
     func extract(from source: String) -> [SwiftStringLiteral] {
         let sourceLines = source.components(separatedBy: "\n")
         var results: [SwiftStringLiteral] = []

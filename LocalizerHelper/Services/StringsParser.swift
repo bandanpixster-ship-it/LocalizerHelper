@@ -8,7 +8,7 @@
 
 import Foundation
 
-struct StringsParser: Sendable {
+nonisolated struct StringsParser: Sendable {
     func parse(_ fileURL: URL) throws -> [LocalizationEntry] {
         let content = try Self.readStringsFile(at: fileURL)
         let tableName = tableName(from: fileURL)

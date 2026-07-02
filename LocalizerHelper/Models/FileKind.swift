@@ -8,7 +8,7 @@
 
 import Foundation
 
-enum FileKind: Hashable {
+nonisolated enum FileKind: Hashable {
     case directory
     case swift
     case strings

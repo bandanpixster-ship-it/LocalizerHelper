@@ -12,6 +12,44 @@ import Foundation
 import Observation
 import os.log
 
+private struct RegexCacheKey: Equatable {
+    let searchText: String
+    let matchCase: Bool
+}
+
+nonisolated enum ScanProgress: Equatable {
+    case idle
+    case scanningFiles(count: Int)
+    case parsingLocalizationFiles(completed: Int, total: Int)
+
+    var label: String {
+        switch self {
+        case .idle:
+            return ""
+        case .scanningFiles(let count):
+            return count == 0 ? "Scanning project…" : "Scanning… \(count) files found"
+        case .parsingLocalizationFiles(let completed, let total):
+            guard total > 0 else { return "Parsing localization files…" }
+            return "Parsing localization files… \(completed)/\(total)"
+        }
+    }
+}
+
+nonisolated enum BulkTranslateProgress: Equatable {
+    case idle
+    case running(completed: Int, total: Int, failed: Int)
+
+    var label: String {
+        switch self {
+        case .idle:
+            return ""
+        case .running(let completed, let total, let failed):
+            let base = "Translating… \(completed)/\(total)"
+            return failed > 0 ? "\(base) (\(failed) failed)" : base
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class ProjectViewModel {
@@ -28,6 +66,8 @@ final class ProjectViewModel {
     var searchScope: SearchScope = .all
     var detailFilter: DetailFilter = .all
     var isScanning = false
+    var scanProgress: ScanProgress = .idle
+    var bulkTranslateProgress: BulkTranslateProgress = .idle
     var scanError: String?
     var unreadableFiles: [URL] = []
     var pendingProjectURL: URL?
@@ -35,6 +75,10 @@ final class ProjectViewModel {
 
     private var securityScopedURL: URL?
     private var scanTask: Task<Void, Never>?
+    private var auditTask: Task<Void, Never>?
+    private var bulkTranslateTask: Task<Void, Never>?
+    @ObservationIgnored private var cachedWholeWordRegex: NSRegularExpression?
+    @ObservationIgnored private var cachedWholeWordRegexKey: RegexCacheKey?
     private var ignoreStoreCancellable: AnyCancellable?
     private let scanner = ProjectScanner()
     private let projectStore = ProjectStore()
@@ -80,18 +124,19 @@ final class ProjectViewModel {
         var results = auditResults.filter { scopedKeys.contains($0.key) }
 
         if !searchText.isEmpty {
+            let entriesByKey = catalog.entriesByKey
             results = results.filter { result in
                 switch searchScope {
                 case .all:
                     return searchMatches(in: result.key.key)
                         || searchMatches(in: result.englishValue)
-                        || translationSearchMatches(for: result.key)
+                        || translationSearchMatches(for: result.key, entriesByKey: entriesByKey)
                 case .keys:
                     return searchMatches(in: result.key.key)
                 case .values:
                     return searchMatches(in: result.englishValue)
                 case .translations:
-                    return translationSearchMatches(for: result.key)
+                    return translationSearchMatches(for: result.key, entriesByKey: entriesByKey)
                 }
             }
         }
@@ -106,8 +151,9 @@ final class ProjectViewModel {
         case .ignored:
             return results.filter { $0.issues.contains(where: { $0.severity == .ignored }) }
         case .aiReady:
+            let entriesByKey = catalog.entriesByKey
             return results.filter { result in
-                catalog.entries.contains { $0.key == result.key && !($0.comment ?? "").isEmpty }
+                entriesByKey[result.key]?.contains { !($0.comment ?? "").isEmpty } ?? false
             }
         }
     }
@@ -137,11 +183,7 @@ final class ProjectViewModel {
     private func searchMatches(in text: String) -> Bool {
         guard !searchText.isEmpty else { return true }
         if searchWholeWord {
-            let escaped = NSRegularExpression.escapedPattern(for: searchText)
-            let pattern = "\\b\(escaped)\\b"
-            var options: NSRegularExpression.Options = [.useUnicodeWordBoundaries]
-            if !searchMatchCase { options.insert(.caseInsensitive) }
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return false }
+            guard let regex = wholeWordRegex() else { return false }
             return regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
         } else {
             let compareOptions: String.CompareOptions = searchMatchCase ? [] : [.caseInsensitive]
@@ -149,8 +191,24 @@ final class ProjectViewModel {
         }
     }
 
-    private func translationSearchMatches(for key: LocalizationKey) -> Bool {
-        catalog.entries.contains { $0.key == key && $0.language != "en" && searchMatches(in: $0.value) }
+    private func wholeWordRegex() -> NSRegularExpression? {
+        let cacheKey = RegexCacheKey(searchText: searchText, matchCase: searchMatchCase)
+        if cachedWholeWordRegexKey == cacheKey {
+            return cachedWholeWordRegex
+        }
+        let escaped = NSRegularExpression.escapedPattern(for: searchText)
+        let pattern = "\\b\(escaped)\\b"
+        var options: NSRegularExpression.Options = [.useUnicodeWordBoundaries]
+        if !searchMatchCase { options.insert(.caseInsensitive) }
+        let regex = try? NSRegularExpression(pattern: pattern, options: options)
+        cachedWholeWordRegexKey = cacheKey
+        cachedWholeWordRegex = regex
+        return regex
+    }
+
+    private func translationSearchMatches(for key: LocalizationKey, entriesByKey: [LocalizationKey: [LocalizationEntry]]) -> Bool {
+        guard let entries = entriesByKey[key] else { return false }
+        return entries.contains { $0.language != "en" && searchMatches(in: $0.value) }
     }
 
     private func containsUserFacingText(_ text: String) -> Bool {
@@ -208,6 +266,7 @@ final class ProjectViewModel {
         securityScopedURL = url
 
         scanTask?.cancel()
+        bulkTranslateTask?.cancel()
         rootURL = url
         selectedNode = nil
         selectionHistory = []
@@ -265,6 +324,7 @@ final class ProjectViewModel {
     func refreshProject() {
         guard let rootURL, let projectID else { return }
         scanTask?.cancel()
+        bulkTranslateTask?.cancel()
         scanTask = Task {
             await performScan(at: rootURL, projectID: projectID)
         }
@@ -397,22 +457,45 @@ final class ProjectViewModel {
         }
     }
 
+    // Polls a background counter on a fixed cadence and forwards it to `scanProgress`,
+    // rather than hopping to the main actor on every file — cheap even for huge projects.
+    private func pollProgress(_ counter: ScanProgressCounter, update: @escaping @MainActor (Int) -> Void) -> Task<Void, Never> {
+        Task { @MainActor in
+            while !Task.isCancelled {
+                update(counter.current)
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+    }
+
     private func performScan(at url: URL, projectID: String) async {
         isScanning = true
-        defer { isScanning = false }
+        scanProgress = .scanningFiles(count: 0)
+        defer {
+            isScanning = false
+            scanProgress = .idle
+        }
 
         do {
-            let scanner = scanner
-            let parsers = parsers
-            let node = try await Task.detached(priority: .userInitiated) {
-                try scanner.scan(at: url)
-            }.value
+            let scanCounter = ScanProgressCounter()
+            let scanPoll = pollProgress(scanCounter) { [weak self] count in
+                self?.scanProgress = .scanningFiles(count: count)
+            }
+            defer { scanPoll.cancel() }
+
+            let node = try await scanner.scan(at: url, progress: scanCounter)
 
             guard !Task.isCancelled else { return }
 
-            let catalog = await Task.detached(priority: .userInitiated) {
-                LocalizationCatalog.build(from: node, parsers: parsers)
-            }.value
+            let totalLocalizationFiles = LocalizationCatalog.localizationFileNodes(in: node).count
+            let parseCounter = ScanProgressCounter()
+            scanProgress = .parsingLocalizationFiles(completed: 0, total: totalLocalizationFiles)
+            let parsePoll = pollProgress(parseCounter) { [weak self] completed in
+                self?.scanProgress = .parsingLocalizationFiles(completed: completed, total: totalLocalizationFiles)
+            }
+            defer { parsePoll.cancel() }
+
+            let catalog = await LocalizationCatalog.build(from: node, parsers: parsers, progress: parseCounter)
 
             guard !Task.isCancelled else { return }
 
@@ -429,39 +512,50 @@ final class ProjectViewModel {
     }
 
     private func refreshAudit() {
-        let store = GlobalIgnoreStore.shared
+        auditTask?.cancel()
 
-        // Keys with a nil-language entry are globally ignored (all languages)
-        let globallyIgnoredKeys = Set(
-            store.entries
-                .filter { $0.language == nil }
-                .compactMap { entry in catalog.entries.first { $0.key.key == entry.key }?.key }
-        )
+        let catalogSnapshot = catalog
+        let auditor = auditor
+        let ignoreEntries = GlobalIgnoreStore.shared.entries
 
-        let raw = auditor.audit(catalog: catalog, ignoredKeys: globallyIgnoredKeys)
-
-        // Post-process: convert language-specific global ignores to .ignored severity
-        auditResults = raw.map { result in
-            let remapped = result.issues.map { issue -> AuditIssue in
-                guard let lang = issue.language, issue.severity != .ignored else { return issue }
-                guard store.entries.contains(where: { $0.key == result.key.key && $0.language == lang }) else { return issue }
-                return AuditIssue(
-                    ruleID: issue.ruleID,
-                    severity: .ignored,
-                    key: issue.key,
-                    language: lang,
-                    message: "\"\(result.key.key)\" in \(lang) is globally ignored"
+        auditTask = Task {
+            let computed = await Task.detached(priority: .userInitiated) {
+                // Keys with a nil-language entry are globally ignored (all languages)
+                let globallyIgnoredKeys = Set(
+                    ignoreEntries
+                        .filter { $0.language == nil }
+                        .compactMap { entry in catalogSnapshot.entries.first { $0.key.key == entry.key }?.key }
                 )
-            }
-            return KeyAuditResult(
-                id: result.id,
-                key: result.key,
-                englishValue: result.englishValue,
-                comment: result.comment,
-                translations: result.translations,
-                issues: remapped,
-                sourceFile: result.sourceFile
-            )
+
+                let raw = auditor.audit(catalog: catalogSnapshot, ignoredKeys: globallyIgnoredKeys)
+
+                // Post-process: convert language-specific global ignores to .ignored severity
+                return raw.map { result -> KeyAuditResult in
+                    let remapped = result.issues.map { issue -> AuditIssue in
+                        guard let lang = issue.language, issue.severity != .ignored else { return issue }
+                        guard ignoreEntries.contains(where: { $0.key == result.key.key && $0.language == lang }) else { return issue }
+                        return AuditIssue(
+                            ruleID: issue.ruleID,
+                            severity: .ignored,
+                            key: issue.key,
+                            language: lang,
+                            message: "\"\(result.key.key)\" in \(lang) is globally ignored"
+                        )
+                    }
+                    return KeyAuditResult(
+                        id: result.id,
+                        key: result.key,
+                        englishValue: result.englishValue,
+                        comment: result.comment,
+                        translations: result.translations,
+                        issues: remapped,
+                        sourceFile: result.sourceFile
+                    )
+                }
+            }.value
+
+            guard !Task.isCancelled else { return }
+            auditResults = computed
         }
     }
 
@@ -528,6 +622,119 @@ final class ProjectViewModel {
         )
     }
 
+    // MARK: - Bulk translate
+
+    var isBulkTranslating: Bool {
+        if case .idle = bulkTranslateProgress { return false }
+        return true
+    }
+
+    /// Translates every key currently visible in the table (respecting the active search/filter
+    /// scope) into every non-English language, skipping languages that already have a value.
+    func translateMissingStrings() {
+        startBulkTranslation(onlyMissing: true)
+    }
+
+    /// Same as `translateMissingStrings`, but overwrites existing translations too.
+    func translateAllStrings() {
+        startBulkTranslation(onlyMissing: false)
+    }
+
+    func cancelBulkTranslate() {
+        bulkTranslateTask?.cancel()
+    }
+
+    private func startBulkTranslation(onlyMissing: Bool) {
+        bulkTranslateTask?.cancel()
+        bulkTranslateTask = Task { await runBulkTranslation(onlyMissing: onlyMissing) }
+    }
+
+    private func runBulkTranslation(onlyMissing: Bool) async {
+        struct WorkItem {
+            let key: LocalizationKey
+            let language: String
+            let file: URL
+            let sourceText: String
+            let comment: String?
+        }
+
+        let scope = filteredAuditResults
+        let languages = catalog.languages.filter { $0 != "en" }
+        guard !scope.isEmpty, !languages.isEmpty else { return }
+
+        let store = GlobalIgnoreStore.shared
+        var work: [WorkItem] = []
+        for result in scope {
+            for language in languages {
+                guard let file = sourceFileURL(for: result.key, language: language) else { continue }
+                guard !store.isIgnored(key: result.key.key, language: language) else { continue }
+                let existing = result.translations[language] ?? ""
+                if onlyMissing && !existing.isEmpty { continue }
+                work.append(WorkItem(key: result.key, language: language, file: file, sourceText: result.englishValue, comment: result.comment))
+            }
+        }
+        guard !work.isEmpty else { return }
+
+        let total = work.count
+        bulkTranslateProgress = .running(completed: 0, total: total, failed: 0)
+
+        let completedCounter = ScanProgressCounter()
+        let failedCounter = ScanProgressCounter()
+        let accumulator = BulkTranslationAccumulator()
+
+        let progressPoll = pollProgress(completedCounter) { [weak self] completed in
+            self?.bulkTranslateProgress = .running(completed: completed, total: total, failed: failedCounter.current)
+        }
+        defer { progressPoll.cancel() }
+
+        // Bounded concurrency: translate a handful of strings at a time rather than either
+        // serially (slow) or all-at-once (hammers free translation APIs into rate limits).
+        let chunkSize = 6
+        var index = 0
+        while index < work.count {
+            if Task.isCancelled { break }
+            let end = min(index + chunkSize, work.count)
+            let chunk = work[index..<end]
+
+            await withTaskGroup(of: Void.self) { group in
+                for item in chunk {
+                    group.addTask {
+                        do {
+                            let value = try await TranslationService.shared.translate(
+                                text: item.sourceText,
+                                to: item.language,
+                                comment: item.comment,
+                                key: item.key.key
+                            )
+                            guard !value.isEmpty else { throw TranslationError.unexpectedResponse }
+                            await accumulator.add(file: item.file, key: item.key.key, language: item.language, value: value)
+                        } catch {
+                            failedCounter.increment()
+                        }
+                        completedCounter.increment()
+                    }
+                }
+            }
+
+            let flushed = await accumulator.flushIfNeeded(threshold: 25, fileUpdater: fileUpdater)
+            if !flushed.isEmpty {
+                for file in flushed { refreshCatalogEntries(for: file) }
+                refreshAudit()
+            }
+            index = end
+        }
+
+        // Always flush whatever succeeded, even if the run was cancelled partway through —
+        // nothing completed should be silently lost.
+        let remaining = await accumulator.flushAll(fileUpdater: fileUpdater)
+        if !remaining.isEmpty {
+            for file in remaining { refreshCatalogEntries(for: file) }
+            refreshAudit()
+        }
+
+        bulkTranslateProgress = .idle
+    }
+
     var localizationFiles: [URL] {
         var urls = Set<URL>()
         for entry in catalog.entries {
@@ -537,8 +744,12 @@ final class ProjectViewModel {
     }
 
     func addLanguage(code: String, to fileURL: URL) {
+        addLanguages(codes: [code], to: fileURL)
+    }
+
+    func addLanguages(codes: [String], to fileURL: URL) {
         do {
-            try fileUpdater.addLanguage(code: code, to: fileURL)
+            try fileUpdater.addLanguages(codes: codes, to: fileURL)
             refreshCatalogEntries(for: fileURL)
             refreshAudit()
         } catch {

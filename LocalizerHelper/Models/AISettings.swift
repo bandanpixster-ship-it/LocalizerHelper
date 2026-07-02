@@ -8,7 +8,7 @@
 import Foundation
 import Security
 
-enum AIProvider: String, CaseIterable, Identifiable, Codable {
+nonisolated enum AIProvider: String, CaseIterable, Identifiable, Codable {
     case claude   = "claude"
     case openAI   = "openai"
     case gemini   = "gemini"
@@ -64,8 +64,12 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+// `nonisolated` so `TranslationService` (which needs to run off the main actor for bulk/
+// concurrent translation work) can read settings without forcing a main-actor hop.
+// UserDefaults and Keychain are thread-safe, and the Observation registrar tolerates
+// cross-actor reads, so this is safe for a plain settings store like this.
 @Observable
-final class AISettings {
+nonisolated final class AISettings {
     static let shared = AISettings()
 
     var preferredProvider: AIProvider {

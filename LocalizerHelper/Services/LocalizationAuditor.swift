@@ -8,7 +8,7 @@
 
 import Foundation
 
-struct LocalizationAuditor: Sendable {
+nonisolated struct LocalizationAuditor: Sendable {
     func audit(
         catalog: LocalizationCatalog,
         ignoredKeys: Set<LocalizationKey> = []

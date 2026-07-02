@@ -8,22 +8,26 @@
 
 import Foundation
 
-struct ProjectScanner: Sendable {
+nonisolated struct ProjectScanner: Sendable {
     static let excludedDirectoryNames: Set<String> = [
         "Pods", "DerivedData", ".git",
         "build", ".build",       // Xcode custom build output & Swift PM
         "Carthage",              // Carthage dependencies
     ]
 
-    func scan(at rootURL: URL) throws -> FileNode {
+    func scan(at rootURL: URL, progress: ScanProgressCounter? = nil) async throws -> FileNode {
         let name = rootURL.lastPathComponent
-        return try scanNode(at: rootURL, name: name, isDirectory: true)
+        return try await scanNode(at: rootURL, name: name, isDirectory: true, progress: progress)
     }
 
-    private func scanNode(at url: URL, name: String, isDirectory: Bool) throws -> FileNode {
+    // Subdirectories are scanned concurrently via a task group — each recursive call is
+    // independent I/O (directory listing + stat calls), so overlapping them across cores
+    // speeds up large projects without any shared mutable state.
+    private func scanNode(at url: URL, name: String, isDirectory: Bool, progress: ScanProgressCounter?) async throws -> FileNode {
         let kind = FileKind.from(url: url, isDirectory: isDirectory)
 
         guard isDirectory else {
+            progress?.increment()
             return FileNode(name: name, url: url, isDirectory: false, fileKind: kind)
         }
 
@@ -33,23 +37,31 @@ struct ProjectScanner: Sendable {
             options: [.skipsHiddenFiles]
         )
 
-        let sorted = contents.sorted { lhs, rhs in
-            let lhsIsDir = (try? lhs.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-            let rhsIsDir = (try? rhs.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-            if lhsIsDir != rhsIsDir { return lhsIsDir && !rhsIsDir }
-            return lhs.lastPathComponent.localizedCaseInsensitiveCompare(rhs.lastPathComponent) == .orderedAscending
-        }
-
-        var children: [FileNode] = []
-        for childURL in sorted {
+        let candidates: [(url: URL, name: String, isDirectory: Bool)] = contents.compactMap { childURL in
             let childName = childURL.lastPathComponent
             let childIsDirectory = (try? childURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-
             if childIsDirectory, Self.excludedDirectoryNames.contains(childName) {
-                continue
+                return nil
             }
+            return (childURL, childName, childIsDirectory)
+        }
 
-            children.append(try scanNode(at: childURL, name: childName, isDirectory: childIsDirectory))
+        var children = try await withThrowingTaskGroup(of: FileNode.self) { group in
+            for candidate in candidates {
+                group.addTask {
+                    try await self.scanNode(at: candidate.url, name: candidate.name, isDirectory: candidate.isDirectory, progress: progress)
+                }
+            }
+            var results: [FileNode] = []
+            for try await node in group {
+                results.append(node)
+            }
+            return results
+        }
+
+        children.sort { lhs, rhs in
+            if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory && !rhs.isDirectory }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
 
         return FileNode(name: name, url: url, isDirectory: true, children: children, fileKind: kind)

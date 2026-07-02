@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var hasAutoOpened = false
     @State private var showAddLanguage = false
     @State private var showMissingProjectAlert = false
+    @State private var showTranslateAllConfirmation = false
     @State private var initialProjectURL: URL?
     @State private var autoOpenLastProject: Bool
 
@@ -42,7 +43,7 @@ struct ContentView: View {
             AddLanguageView(
                 localizationFiles: viewModel.localizationFiles,
                 existingLanguages: viewModel.catalog.languages,
-                onAdd: { code, file in viewModel.addLanguage(code: code, to: file) }
+                onAdd: { codes, file in viewModel.addLanguages(codes: codes, to: file) }
             )
         }
         .alert("Scan Error", isPresented: .init(
@@ -87,6 +88,37 @@ struct ContentView: View {
                 endPoint: .bottomTrailing
             )
         )
+        .overlay {
+            if viewModel.isScanning {
+                ZStack {
+                    Rectangle()
+                        .fill(.regularMaterial)
+                        .ignoresSafeArea()
+                    VStack(spacing: 12) {
+                        if case .parsingLocalizationFiles(let completed, let total) = viewModel.scanProgress, total > 0 {
+                            ProgressView(value: Double(completed), total: Double(total))
+                                .frame(width: 160)
+                        } else {
+                            ProgressView()
+                                .controlSize(.large)
+                        }
+                        Text(viewModel.scanProgress.label.isEmpty ? "Scanning project…" : viewModel.scanProgress.label)
+                            .font(.headline)
+                            .contentTransition(.numericText())
+                            .animation(.easeInOut(duration: 0.1), value: viewModel.scanProgress)
+                        Text("We’re indexing files and localization entries. This can take a moment for large projects.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 280)
+                    }
+                    .padding(24)
+                    .modernCard()
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: viewModel.isScanning)
         .onAppear {
             guard !hasAutoOpened else { return }
             hasAutoOpened = true
@@ -154,22 +186,6 @@ struct ContentView: View {
             }
         }
         .navigationSplitViewColumnWidth(min: 240, ideal: 300)
-        .overlay {
-            if viewModel.isScanning {
-                VStack(spacing: 10) {
-                    ProgressView()
-                    Text("Scanning project…")
-                        .font(.subheadline.weight(.medium))
-                    Text("We’re indexing files and localization entries.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .padding(16)
-                .frame(maxWidth: 240)
-                .modernCard()
-            }
-        }
     }
 
     @ViewBuilder
@@ -266,6 +282,7 @@ struct ContentView: View {
 
                     Spacer(minLength: 0)
                 }
+                .disabled(viewModel.isScanning)
 
                 if showsLocalizationDetail {
                     HStack(spacing: 12) {
@@ -283,8 +300,58 @@ struct ContentView: View {
                             }
                             .pickerStyle(.segmented)
                             .frame(maxWidth: 260)
-                            .padding(.horizontal, 20)
+                            .padding(.horizontal, 40)
+                            
+                            Button {
+                                viewModel.translateMissingStrings()
+                            } label: {
+                                Label("Translate Missing", systemImage: "globe")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(viewModel.isBulkTranslating || viewModel.filteredAuditResults.isEmpty)
+                            .help("Translate every empty translation currently shown, into all project languages")
+                            
+                            Button {
+                                showTranslateAllConfirmation = true
+                            } label: {
+                                Label("Translate All", systemImage: "globe.badge.chevron.backward")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(viewModel.isBulkTranslating || viewModel.filteredAuditResults.isEmpty)
+                            .help("Re-translate every string currently shown, overwriting existing translations")
+                            .confirmationDialog(
+                                "Translate All?",
+                                isPresented: $showTranslateAllConfirmation,
+                                titleVisibility: .visible
+                            ) {
+                                Button("Translate All", role: .destructive) {
+                                    viewModel.translateAllStrings()
+                                }
+                                Button("Cancel", role: .cancel) {}
+                            } message: {
+                                Text("This overwrites every existing translation currently shown with a freshly generated one. This may call your configured translation provider many times.")
+                            }
                         }
+                    }
+
+                    if viewModel.isBulkTranslating {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(viewModel.bulkTranslateProgress.label)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .contentTransition(.numericText())
+                            Spacer()
+                            Button("Cancel") {
+                                viewModel.cancelBulkTranslate()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                        .animation(.easeInOut(duration: 0.1), value: viewModel.bulkTranslateProgress)
                     }
                 }
             }
@@ -420,17 +487,20 @@ struct ContentView: View {
             Button(action: { viewModel.openProject() }) {
                 Label("Open Project", systemImage: "folder")
             }
+            .disabled(viewModel.isScanning)
             Button(action: { viewModel.refreshProject() }) {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
-            .disabled(viewModel.rootURL == nil || viewModel.isScanning)
+            .disabled(viewModel.rootURL == nil || viewModel.isScanning || viewModel.isBulkTranslating)
+            .help(viewModel.isBulkTranslating ? "Wait for the bulk translation to finish before refreshing" : "")
             Button(action: { showAddLanguage = true }) {
                 Label("Add Language", systemImage: "plus.bubble")
             }
-            .disabled(viewModel.localizationFiles.isEmpty)
+            .disabled(viewModel.localizationFiles.isEmpty || viewModel.isScanning)
             .help("Add a new language to your localization files")
 
             openLocalizableButton
+                .disabled(viewModel.isScanning)
         }
     }
 }

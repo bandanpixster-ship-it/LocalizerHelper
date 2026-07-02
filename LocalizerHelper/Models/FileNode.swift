@@ -8,7 +8,7 @@
 
 import Foundation
 
-struct FileNode: Identifiable, Hashable {
+nonisolated struct FileNode: Identifiable, Hashable {
     var id: URL { url }
     let name: String
     let url: URL

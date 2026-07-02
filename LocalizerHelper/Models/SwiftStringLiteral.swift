@@ -8,7 +8,7 @@
 
 import Foundation
 
-struct SwiftStringLiteral: Identifiable, Hashable {
+nonisolated struct SwiftStringLiteral: Identifiable, Hashable {
     let id: UUID
     let raw: String
     let displayPattern: String
