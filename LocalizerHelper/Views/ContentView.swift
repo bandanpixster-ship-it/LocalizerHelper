@@ -12,6 +12,7 @@ struct ContentView: View {
     @State private var viewModel: ProjectViewModel
     @State private var hasAutoOpened = false
     @State private var showAddLanguage = false
+    @State private var showHelp = false
     @State private var showMissingProjectAlert = false
     @State private var showTranslateAllConfirmation = false
     @State private var initialProjectURL: URL?
@@ -38,6 +39,7 @@ struct ContentView: View {
             }
         })
         .focusedSceneValue(\.focusSearchFieldAction, { isSearchFieldFocused = true })
+        .focusedSceneValue(\.showHelpAction, { showHelp = true })
         .navigationTitle(windowTitle)
         .navigationSplitViewStyle(.balanced)
         .toolbar { toolbarContent }
@@ -47,6 +49,9 @@ struct ContentView: View {
                 existingLanguages: viewModel.catalog.languages,
                 onAdd: { codes, file in viewModel.addLanguages(codes: codes, to: file) }
             )
+        }
+        .sheet(isPresented: $showHelp) {
+            HelpView()
         }
         .alert("Scan Error", isPresented: .init(
             get: { viewModel.scanError != nil },
@@ -152,7 +157,7 @@ struct ContentView: View {
         if let rootURL = viewModel.rootURL {
             return rootURL.lastPathComponent
         }
-        return "LocalizerHelper"
+        return "StringPilot"
     }
 
     private func locateMissingProject() {
@@ -239,6 +244,17 @@ struct ContentView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .help("Open file or folder in Finder")
+
+                    Button(action: {
+                        if let url = viewModel.selectedNode?.url {
+                            ProjectViewModel.openInXcode(url)
+                        }
+                    }) {
+                        Label("Open in Xcode", systemImage: "hammer")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Open file or folder in Xcode")
                 }
 
                 HStack(spacing: 10) {
@@ -249,6 +265,13 @@ struct ContentView: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 360)
                         .focused($isSearchFieldFocused)
+                        .overlay(alignment: .trailing) {
+                            if viewModel.isSearchPending {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .padding(.trailing, 6)
+                            }
+                        }
 
                     Menu {
                         ForEach(SearchScope.allCases) { scope in
@@ -499,6 +522,11 @@ struct ContentView: View {
             }
             .disabled(viewModel.rootURL == nil || viewModel.isScanning || viewModel.isBulkTranslating)
             .help(viewModel.isBulkTranslating ? "Wait for the bulk translation to finish before refreshing" : "")
+            Button(action: { viewModel.openProjectInXcode() }) {
+                Label("Open in Xcode", systemImage: "hammer")
+            }
+            .disabled(viewModel.rootURL == nil)
+            .help("Open the project's .xcworkspace / .xcodeproj in Xcode")
             Button(action: { showAddLanguage = true }) {
                 Label("Add Language", systemImage: "plus.bubble")
             }

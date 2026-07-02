@@ -29,7 +29,7 @@ final class WindowCoordinator {
         )
         window.contentViewController = hostingController
         window.isReleasedWhenClosed = false
-        window.title = "LocalizerHelper"
+        window.title = "StringPilot"
         window.center()
 
         let controller = NSWindowController(window: window)

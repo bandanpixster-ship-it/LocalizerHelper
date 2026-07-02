@@ -12,6 +12,7 @@ extension FocusedValues {
     @Entry var showAddLanguageAction: (() -> Void)? = nil
     @Entry var openProjectInNewWindowAction: (() -> Void)? = nil
     @Entry var focusSearchFieldAction: (() -> Void)? = nil
+    @Entry var showHelpAction: (() -> Void)? = nil
 }
 
 // MARK: - Menu commands
@@ -20,15 +21,33 @@ struct AppCommands: Commands {
     @FocusedValue(\.showAddLanguageAction) private var showAddLanguage: (() -> Void)?
     @FocusedValue(\.openProjectInNewWindowAction) private var openProjectInNewWindow: (() -> Void)?
     @FocusedValue(\.focusSearchFieldAction) private var focusSearchField: (() -> Void)?
+    @FocusedValue(\.showHelpAction) private var showHelp: (() -> Void)?
 
     var body: some Commands {
+        CommandGroup(replacing: .appInfo) {
+            Button("About StringPilot") {
+                NSApplication.shared.orderFrontStandardAboutPanel(options: [
+                    .credits: NSAttributedString(
+                        string: "Audits localization coverage in Xcode projects — extract Swift string literals, find missing or inconsistent translations, and fill them in with AI or free translation services.",
+                        attributes: [.font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)]
+                    )
+                ])
+            }
+        }
         fileMenuCommands
         viewMenuCommands
-        CommandMenu("Edit") {
+        CommandGroup(after: .pasteboard) {
+            Divider()
             Button("Find…") {
                 focusSearchField?()
             }
             .keyboardShortcut("f", modifiers: .command)
+        }
+        CommandGroup(replacing: .help) {
+            Button("StringPilot Help") {
+                showHelp?()
+            }
+            .keyboardShortcut("?", modifiers: .command)
         }
     }
 
@@ -52,6 +71,11 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("r", modifiers: .command)
             .disabled(viewModel?.rootURL == nil || viewModel?.isScanning == true || viewModel?.isBulkTranslating == true)
+
+            Button("Open Project in Xcode") {
+                viewModel?.openProjectInXcode()
+            }
+            .disabled(viewModel?.rootURL == nil)
         }
     }
 

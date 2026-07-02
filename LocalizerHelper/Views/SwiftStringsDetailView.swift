@@ -50,6 +50,12 @@ enum Filter: String, CaseIterable, Identifiable {
         var id: UUID { literal.id }
     }
 
+    private struct FileGroup: Identifiable {
+        let file: URL
+        let rows: [Row]
+        var id: URL { file }
+    }
+
     private var rows: [Row] {
         let missingIDs = Set(pendingLiterals.map { $0.id })
         var rows = literals.map { literal in
@@ -80,6 +86,24 @@ enum Filter: String, CaseIterable, Identifiable {
         }
 
         return rows
+    }
+
+    private var showFileSections: Bool {
+        Set(rows.map { $0.literal.sourceFile }).count > 1
+    }
+
+    private var groupedRows: [FileGroup] {
+        var order: [URL] = []
+        var byFile: [URL: [Row]] = [:]
+        for row in rows {
+            let file = row.literal.sourceFile
+            if byFile[file] == nil {
+                byFile[file] = []
+                order.append(file)
+            }
+            byFile[file]?.append(row)
+        }
+        return order.map { FileGroup(file: $0, rows: byFile[$0] ?? []) }
     }
 
     var body: some View {
@@ -130,7 +154,7 @@ enum Filter: String, CaseIterable, Identifiable {
                         .strokeBorder(.white.opacity(0.06), lineWidth: 1)
                 )
 
-                Table(rows) {
+                Table(of: Row.self) {
                     TableColumn("Pattern") { row in
                         Text(row.literal.displayPattern)
                             .font(.body)
@@ -151,9 +175,15 @@ enum Filter: String, CaseIterable, Identifiable {
                             .background((row.isMissing ? Color.orange.opacity(0.14) : Color.green.opacity(0.14)), in: RoundedRectangle(cornerRadius: 12))
                     }
                     TableColumn("Line") { row in
-                        Text("\(row.literal.lineNumber)")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
+                        Button {
+                            ProjectViewModel.openInXcode(row.literal.sourceFile, line: row.literal.lineNumber)
+                        } label: {
+                            Text("\(row.literal.lineNumber)")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Open at this line in Xcode")
                     }
                     TableColumn("Notes") { row in
                         if row.literal.hasInterpolation {
@@ -175,6 +205,22 @@ enum Filter: String, CaseIterable, Identifiable {
                         } else {
                             Text("—")
                                 .foregroundStyle(.secondary)
+                        }
+                    }
+                } rows: {
+                    if showFileSections {
+                        ForEach(groupedRows) { group in
+                            Section {
+                                ForEach(group.rows) { row in
+                                    TableRow(row)
+                                }
+                            } header: {
+                                fileSectionHeader(group.file)
+                            }
+                        }
+                    } else {
+                        ForEach(rows) { row in
+                            TableRow(row)
                         }
                     }
                 }
@@ -233,6 +279,40 @@ enum Filter: String, CaseIterable, Identifiable {
                 )
             }
         }
+    }
+
+    @ViewBuilder
+    private func fileSectionHeader(_ file: URL) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "doc.text")
+                .foregroundStyle(.secondary)
+            Text(file.lastPathComponent)
+                .font(.subheadline.weight(.semibold))
+            Spacer()
+            Button {
+                revealInFinder(file)
+            } label: {
+                Image(systemName: "folder")
+            }
+            .buttonStyle(.borderless)
+            .help("Show in Finder")
+
+            Button {
+                openInXcode(file)
+            } label: {
+                Image(systemName: "hammer")
+            }
+            .buttonStyle(.borderless)
+            .help("Open in Xcode")
+        }
+    }
+
+    private func revealInFinder(_ file: URL) {
+        NSWorkspace.shared.activateFileViewerSelecting([file])
+    }
+
+    private func openInXcode(_ file: URL) {
+        ProjectViewModel.openInXcode(file)
     }
 }
 

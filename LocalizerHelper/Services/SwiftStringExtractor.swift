@@ -62,7 +62,11 @@ nonisolated struct SwiftStringExtractor: Sendable {
 
     func extract(fileURL: URL) throws -> [SwiftStringLiteral] {
         let source = try String(contentsOf: fileURL, encoding: .utf8)
-        return extract(from: source)
+        return extract(from: source).map { literal in
+            var literal = literal
+            literal.sourceFile = fileURL
+            return literal
+        }
     }
 
     private struct ExtractedLiteral {

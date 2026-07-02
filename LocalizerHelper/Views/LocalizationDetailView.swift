@@ -274,7 +274,7 @@ struct LocalizationDetailView: View {
                     isTranslating = false
                 }
             } catch {
-                os_log("[Translate \(lang)] failed: %{public}@", log: .default, type: .error, error.localizedDescription)
+                os_log("[Translate %{public}@] failed: %{public}@", log: .default, type: .error, lang, error.localizedDescription)
                 await MainActor.run {
                     isTranslating = false
                     translateError = error.localizedDescription

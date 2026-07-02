@@ -15,6 +15,7 @@ nonisolated struct SwiftStringLiteral: Identifiable, Hashable {
     let hasInterpolation: Bool
     let lineNumber: Int
     let sourceLine: String
+    var sourceFile: URL
 
     init(
         id: UUID = UUID(),
@@ -22,7 +23,8 @@ nonisolated struct SwiftStringLiteral: Identifiable, Hashable {
         displayPattern: String,
         hasInterpolation: Bool,
         lineNumber: Int,
-        sourceLine: String = ""
+        sourceLine: String = "",
+        sourceFile: URL = URL(fileURLWithPath: "")
     ) {
         self.id = id
         self.raw = raw
@@ -30,6 +32,7 @@ nonisolated struct SwiftStringLiteral: Identifiable, Hashable {
         self.hasInterpolation = hasInterpolation
         self.lineNumber = lineNumber
         self.sourceLine = sourceLine
+        self.sourceFile = sourceFile
     }
 
     /// The string with Swift interpolations replaced by `%@` / `%1$@` format specifiers.

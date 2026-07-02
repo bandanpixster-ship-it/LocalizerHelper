@@ -190,7 +190,12 @@ final class ProjectViewModel {
 
     // MARK: - Search helpers
 
-    private func updateSearchText(_ newText: String) {
+    /// True while a debounced search is queued but hasn't been applied to the results yet.
+    var isSearchPending: Bool {
+        searchText != debouncedSearchText
+    }
+
+    func updateSearchText(_ newText: String) {
         searchText = newText
 
         // Cancel any pending debounce task
@@ -348,6 +353,36 @@ final class ProjectViewModel {
             if node.url == url { return node }
             if let found = findNode(url: url, in: node.children) { return found }
         }
+        return nil
+    }
+
+    /// Opens the project's `.xcworkspace` / `.xcodeproj` in Xcode if one is found at the
+    /// project root, otherwise opens the root folder itself.
+    func openProjectInXcode() {
+        guard let rootURL else { return }
+        ProjectViewModel.openInXcode(xcodeProjectURL(in: rootURL) ?? rootURL)
+    }
+
+    static func openInXcode(_ url: URL, line: Int? = nil) {
+        if let line, FileManager.default.isExecutableFile(atPath: "/usr/bin/xed") {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/xed")
+            process.arguments = ["--line", "\(line)", url.path]
+            try? process.run()
+            return
+        }
+
+        if let xcodeURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.dt.Xcode") {
+            NSWorkspace.shared.open([url], withApplicationAt: xcodeURL, configuration: NSWorkspace.OpenConfiguration())
+        } else {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func xcodeProjectURL(in folder: URL) -> URL? {
+        guard let contents = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { return nil }
+        if let workspace = contents.first(where: { $0.pathExtension == "xcworkspace" }) { return workspace }
+        if let project = contents.first(where: { $0.pathExtension == "xcodeproj" }) { return project }
         return nil
     }
 
@@ -611,7 +646,10 @@ final class ProjectViewModel {
                 }
                 var all: [SwiftStringLiteral] = []
                 for await batch in group { all.append(contentsOf: batch) }
-                return all.sorted { $0.lineNumber < $1.lineNumber }
+                return all.sorted {
+                    if $0.sourceFile == $1.sourceFile { return $0.lineNumber < $1.lineNumber }
+                    return $0.sourceFile.lastPathComponent < $1.sourceFile.lastPathComponent
+                }
             }
             swiftLiterals = results
         }

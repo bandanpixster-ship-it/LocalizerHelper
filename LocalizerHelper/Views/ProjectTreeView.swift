@@ -29,6 +29,11 @@ struct ProjectTreeView: View {
                     }) {
                         Label("Open in Finder", systemImage: "folder")
                     }
+                    Button(action: {
+                        ProjectViewModel.openInXcode(node.url)
+                    }) {
+                        Label("Open in Xcode", systemImage: "hammer")
+                    }
                 }
             }
         }

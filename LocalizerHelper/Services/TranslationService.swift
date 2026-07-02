@@ -45,32 +45,37 @@ nonisolated struct TranslationService: Sendable {
 
     // MARK: - Provider test (used by Settings UI to validate a key before saving)
 
-    private static let testLock = NSLock()
+    // Actor-based queue: each call awaits the prior one before running, so the
+    // AISettings stash/restore below never overlaps across concurrent test() calls.
+    private actor TestSerializer {
+        private var lastTask: Task<Void, Error>?
+
+        func enqueue(_ operation: @escaping () async throws -> Void) async throws {
+            let previous = lastTask
+            let task = Task<Void, Error> {
+                _ = await previous?.result
+                try await operation()
+            }
+            lastTask = task
+            try await task.value
+        }
+    }
+
+    private static let testSerializer = TestSerializer()
 
     func test(provider: AIProvider, apiKey: String) async throws {
-        // Use a lock to prevent concurrent test calls from interfering with each other
-        return try await withCheckedThrowingContinuation { continuation in
-            Self.testLock.lock()
-            defer { Self.testLock.unlock() }
-
-            Task {
-                do {
-                    // Temporarily stash the key, run one real translation, restore original.
-                    let original = AISettings.shared.key(for: provider)
-                    let originalProvider = AISettings.shared.preferredProvider
-                    AISettings.shared.setKey(apiKey, for: provider)
-                    AISettings.shared.preferredProvider = provider
-                    defer {
-                        AISettings.shared.setKey(original, for: provider)
-                        AISettings.shared.preferredProvider = originalProvider
-                    }
-                    let result = try await translateViaAI(text: "Hello", comment: "Settings test", key: "test", to: "fr")
-                    guard !result.isEmpty else { throw TranslationError.unexpectedResponse }
-                    continuation.resume()
-                } catch {
-                    continuation.resume(throwing: error)
-                }
+        try await Self.testSerializer.enqueue {
+            // Temporarily stash the key, run one real translation, restore original.
+            let original = AISettings.shared.key(for: provider)
+            let originalProvider = AISettings.shared.preferredProvider
+            AISettings.shared.setKey(apiKey, for: provider)
+            AISettings.shared.preferredProvider = provider
+            defer {
+                AISettings.shared.setKey(original, for: provider)
+                AISettings.shared.preferredProvider = originalProvider
             }
+            let result = try await self.translateViaAI(text: "Hello", comment: "Settings test", key: "test", to: "fr")
+            guard !result.isEmpty else { throw TranslationError.unexpectedResponse }
         }
     }
 
